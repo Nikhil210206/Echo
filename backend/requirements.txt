@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+alembic
+psycopg[binary]
+pydantic
+python-jose[cryptography]
+passlib[bcrypt]
+slowapi
+sse-starlette
+google-genai
+vaderSentiment
+fastembed
+python-dotenv

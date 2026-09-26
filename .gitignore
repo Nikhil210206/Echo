@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
+
+# Local tooling
+.claude/
+CLAUDE.md
