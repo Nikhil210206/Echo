@@ -64,7 +64,7 @@ export default function Issues() {
     { scope: list, dependencies: [filter, category, !!all] },
   );
 
-  const maxScore = Math.max(...(shown ?? []).map((i) => i.priority_score), 1);
+  const maxScore = Math.max(...(shown ?? []).map((i) => i.priority_score ?? 0), 1);
 
   return (
     <div>
@@ -144,8 +144,8 @@ export default function Issues() {
                   <span className="min-w-0">
                     <span className="flex flex-wrap items-center gap-2">
                       <span className="font-medium">{i.title}</span>
-                      <UrgencyTag urgency={i.urgency} />
-                      {i.reopened_count > 0 && i.status !== "reopened" && (
+                      <UrgencyTag urgency={i.urgency ?? "normal"} />
+                      {(i.reopened_count ?? 0) > 0 && i.status !== "reopened" && (
                         <span className="eyebrow rounded bg-signal/15 px-1.5 !text-[0.6rem] text-signal">reopened before</span>
                       )}
                     </span>
@@ -157,12 +157,12 @@ export default function Issues() {
                     {i.report_count}
                     <span className="block text-[0.65rem] text-bone/35 lg:hidden">reports</span>
                   </span>
-                  <span className="hidden text-right font-mono text-bone/70 lg:block">{pct(i.negative_share)}</span>
+                  <span className="hidden text-right font-mono text-bone/70 lg:block">{pct(i.negative_share ?? 0)}</span>
                   <span className="hidden items-center gap-3 lg:flex">
                     <span className="h-1.5 flex-1 rounded-full bg-bone/[0.06]">
-                      <span className="block h-1.5 rounded-full bg-lilac" style={{ width: `${(i.priority_score / maxScore) * 100}%` }} />
+                      <span className="block h-1.5 rounded-full bg-lilac" style={{ width: `${((i.priority_score ?? 0) / maxScore) * 100}%` }} />
                     </span>
-                    <span className="w-10 text-right font-mono text-sm">{i.priority_score.toFixed(1)}</span>
+                    <span className="w-10 text-right font-mono text-sm">{(i.priority_score ?? 0).toFixed(1)}</span>
                   </span>
                   <span className="hidden lg:block">
                     <StatusPill status={i.status} />

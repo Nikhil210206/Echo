@@ -826,7 +826,10 @@ export const mock = {
   },
 
   track(code: string): TrackResult {
-    const row = feedback.find((f) => f.tracking_code === code.trim().toUpperCase());
+    const clean = code.trim().toUpperCase().replace("ECH-", "");
+    const row = feedback.find(
+      (f) => f.tracking_code === code.trim().toUpperCase() || f.tracking_code.replace("ECH-", "") === clean
+    );
     if (!row) throw new MockError("NOT_FOUND", "No report matches that code. Check the letters and try again.");
     const issueIds = [...new Set(row.aspects.map((a) => a.issue_id).filter((x): x is number => x != null))];
     return {

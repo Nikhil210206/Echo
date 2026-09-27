@@ -52,7 +52,7 @@ export function AdminShell() {
     () => {
       if (prefersReducedMotion()) return;
       // clearProps: a leftover transform would trap position:fixed overlays inside <main>
-      gsap.fromTo(main.current, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.7, clearProps: "transform" });
+      gsap.fromTo(main.current, { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.25, clearProps: "transform" });
     },
     { dependencies: [loc.pathname], scope: main },
   );

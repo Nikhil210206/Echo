@@ -245,12 +245,18 @@ const PIPE_COLOR: Record<IssueStatus, string> = {
   reopened: "#ff5a1f",
 };
 
-export function Pipeline({ data, avgDays }: { data: AnalyticsSummary["pipeline"]; avgDays: number }) {
-  const max = Math.max(...data.map((d) => d.count), 1);
+export function Pipeline({ data, avgDays }: { data: AnalyticsSummary["pipeline"] | Record<string, number>; avgDays: number }) {
+  const list = Array.isArray(data)
+    ? data
+    : Object.entries(data || {})
+        .filter(([k]) => k in STATUS_LABEL)
+        .map(([status, count]) => ({ status: status as IssueStatus, count: Number(count) }));
+
+  const max = Math.max(...list.map((d) => d.count), 1);
   return (
     <div className="grid gap-6 sm:grid-cols-[1fr_auto] sm:items-end">
       <ul className="space-y-3">
-        {data.map((d) => (
+        {list.map((d) => (
           <li key={d.status} className="grid grid-cols-[6.5rem_1fr_2rem] items-center gap-3 text-sm">
             <span className="text-bone/70">{STATUS_LABEL[d.status]}</span>
             <span className="h-3 rounded-full bg-bone/[0.05]">
@@ -265,7 +271,7 @@ export function Pipeline({ data, avgDays }: { data: AnalyticsSummary["pipeline"]
         ))}
       </ul>
       <div className="rounded-2xl bg-bone/[0.04] px-5 py-4 sm:text-right">
-        <p className="display text-5xl leading-none">{avgDays}</p>
+        <p className="display text-5xl leading-none">{avgDays ?? 0}</p>
         <p className="mt-1 text-xs text-bone/50">days to resolve, on average</p>
       </div>
     </div>
