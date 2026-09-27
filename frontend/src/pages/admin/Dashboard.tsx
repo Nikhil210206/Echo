@@ -29,10 +29,11 @@ export default function Dashboard() {
 
   const load = useCallback(() => {
     let alive = true;
-    Promise.all([api.analytics(), api.issues({ status: "active" }), api.alerts(), api.publicStats()])
-      .then(([analytics, issues, alerts, stats]) => {
+    api
+      .dashboardSummary()
+      .then((res) => {
         if (!alive) return;
-        setData({ analytics, issues, alerts, stats });
+        setData(res);
         setError(null);
       })
       .catch((e: Error) => alive && setError(e.message));
@@ -239,7 +240,7 @@ function TrendsCard({ trends }: { trends: Trend[] }) {
 
 function PriorityQueue({ issues }: { issues: IssueSummary[] }) {
   const top = issues.slice(0, 5);
-  const max = Math.max(...top.map((i) => i.priority_score), 1);
+  const max = Math.max(...top.map((i) => i.priority_score ?? 0), 1);
   return (
     <Panel
       className="dash-card"
@@ -264,17 +265,17 @@ function PriorityQueue({ issues }: { issues: IssueSummary[] }) {
                 <span className="min-w-0">
                   <span className="flex flex-wrap items-center gap-2">
                     <span className="truncate font-medium">{i.title}</span>
-                    <UrgencyTag urgency={i.urgency} />
+                    <UrgencyTag urgency={i.urgency ?? "normal"} />
                   </span>
                   <span className="mt-1 block text-xs text-bone/45">
                     {categoryLabel(i.category)} · {i.location_name} · {i.report_count} reports · {i.assignee?.name ?? "unassigned"}
                   </span>
                   <span className="mt-2 block h-1.5 rounded-full bg-bone/[0.06]">
-                    <span className="block h-1.5 rounded-full bg-lilac" style={{ width: `${(i.priority_score / max) * 100}%` }} />
+                    <span className="block h-1.5 rounded-full bg-lilac" style={{ width: `${((i.priority_score ?? 0) / max) * 100}%` }} />
                   </span>
                 </span>
                 <span className="flex flex-col items-end gap-2">
-                  <span className="font-mono text-lg">{i.priority_score.toFixed(1)}</span>
+                  <span className="font-mono text-lg">{(i.priority_score ?? 0).toFixed(1)}</span>
                   <StatusPill status={i.status} />
                 </span>
               </Link>

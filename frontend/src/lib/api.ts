@@ -92,6 +92,26 @@ async function request<T>(path: string, init?: RequestInit & { json?: unknown })
   return res.json() as Promise<T>;
 }
 
+const cache = new Map<string, { timestamp: number; promise: Promise<unknown> }>();
+
+export function clearApiCache() {
+  cache.clear();
+}
+
+async function cachedRequest<T>(path: string, ttlMs = 5000): Promise<T> {
+  const now = Date.now();
+  const hit = cache.get(path);
+  if (hit && now - hit.timestamp < ttlMs) {
+    return hit.promise as Promise<T>;
+  }
+  const promise = request<T>(path).catch((err) => {
+    cache.delete(path);
+    throw err;
+  });
+  cache.set(path, { timestamp: now, promise });
+  return promise;
+}
+
 /** Runs a mock operation with realistic latency and the same error shape as the API. */
 function fake<T>(fn: () => T, ms = 380): Promise<T> {
   return new Promise((resolve, reject) =>
@@ -119,69 +139,88 @@ const qs = (o: object) => {
 
 export const api = {
   /* public */
-  locations: (): Promise<Location[]> => (USE_MOCKS ? fake(mock.listLocations, 120) : request("/locations/public")),
+  locations: (): Promise<Location[]> => (USE_MOCKS ? fake(mock.listLocations, 120) : cachedRequest("/locations/public")),
 
   location: (slug: string): Promise<Location> =>
-    USE_MOCKS ? fake(() => mock.getLocation(slug), 150) : request(`/locations/${encodeURIComponent(slug)}`),
+    USE_MOCKS ? fake(() => mock.getLocation(slug), 150) : cachedRequest(`/locations/${encodeURIComponent(slug)}`),
 
   locationIssues: (slug: string): Promise<IssueSummary[]> =>
-    USE_MOCKS ? fake(() => mock.locationIssues(slug)) : request(`/locations/${encodeURIComponent(slug)}/issues`),
+    USE_MOCKS ? fake(() => mock.locationIssues(slug)) : cachedRequest(`/locations/${encodeURIComponent(slug)}/issues`),
 
-  meToo: (issueId: number, deviceId: string): Promise<MeTooResult> =>
-    USE_MOCKS
-      ? fake(() => mock.meToo(issueId, deviceId))
-      : request(`/issues/${issueId}/metoo`, { method: "POST", json: { device_id: deviceId } }),
+  meToo: (issueId: string | number, deviceId: string): Promise<MeTooResult> => {
+    clearApiCache();
+    return USE_MOCKS
+      ? fake(() => mock.meToo(Number(issueId), deviceId))
+      : request(`/issues/${issueId}/metoo`, { method: "POST", json: { device_id: deviceId } });
+  },
 
-  submitFeedback: (input: SubmitFeedbackInput): Promise<SubmitFeedbackResult> =>
-    USE_MOCKS ? fake(() => mock.submit(input), 1400) : request("/feedback", { method: "POST", json: input }),
+  submitFeedback: (input: SubmitFeedbackInput): Promise<SubmitFeedbackResult> => {
+    clearApiCache();
+    return USE_MOCKS ? fake(() => mock.submit(input), 1400) : request("/feedback", { method: "POST", json: input });
+  },
 
   track: (code: string): Promise<TrackResult> =>
-    USE_MOCKS ? fake(() => mock.track(code), 250) : request(`/track/${encodeURIComponent(code)}`),
+    USE_MOCKS ? fake(() => mock.track(code), 250) : cachedRequest(`/track/${encodeURIComponent(code)}`),
 
-  verify: (code: string, issueId: number, fixed: boolean): Promise<TrackResult> =>
-    USE_MOCKS
-      ? fake(() => mock.verify(code, issueId, fixed))
-      : request(`/track/${encodeURIComponent(code)}/verify`, { method: "POST", json: { issue_id: issueId, fixed } }),
+  verify: (code: string, issueId: string | number, fixed: boolean): Promise<TrackResult> => {
+    clearApiCache();
+    return USE_MOCKS
+      ? fake(() => mock.verify(code, Number(issueId), fixed))
+      : request(`/track/${encodeURIComponent(code)}/verify`, { method: "POST", json: { issue_id: issueId, fixed } });
+  },
 
-  publicStats: (): Promise<PublicStats> => (USE_MOCKS ? fake(mock.publicStats, 200) : request("/public/stats")),
+  publicStats: (): Promise<PublicStats> => (USE_MOCKS ? fake(mock.publicStats, 200) : cachedRequest("/public/stats")),
 
-  publicIssues: (): Promise<PublicIssue[]> => (USE_MOCKS ? fake(mock.publicIssues, 260) : request("/public/issues")),
+  publicIssues: (): Promise<PublicIssue[]> => (USE_MOCKS ? fake(mock.publicIssues, 260) : cachedRequest("/public/issues")),
 
   /* auth */
-  login: (email: string, password: string): Promise<LoginResult> =>
-    USE_MOCKS ? fake(() => mock.login(email, password), 600) : request("/auth/login", { method: "POST", json: { email, password } }),
+  login: (email: string, password: string): Promise<LoginResult> => {
+    clearApiCache();
+    return USE_MOCKS ? fake(() => mock.login(email, password), 600) : request("/auth/login", { method: "POST", json: { email, password } });
+  },
 
-  me: (): Promise<User> => (USE_MOCKS ? fake(() => mock.me(token), 120) : request("/auth/me")),
+  me: (): Promise<User> => (USE_MOCKS ? fake(() => mock.me(token), 120) : cachedRequest("/auth/me")),
 
   /* staff console */
-  staff: (): Promise<User[]> => (USE_MOCKS ? fake(() => mock.staff(token), 150) : request("/users?role=staff")),
+  staff: (): Promise<User[]> => (USE_MOCKS ? fake(() => mock.staff(token), 150) : cachedRequest("/users?role=staff")),
 
   issues: (q: IssueQuery = {}): Promise<IssueSummary[]> =>
-    USE_MOCKS ? fake(() => mock.listIssues(token, q), 280) : request(`/issues${qs(q)}`),
+    USE_MOCKS ? fake(() => mock.listIssues(token, q), 280) : cachedRequest(`/issues${qs(q)}`),
 
-  issue: (id: number): Promise<IssueDetail> => (USE_MOCKS ? fake(() => mock.getIssue(token, id), 260) : request(`/issues/${id}`)),
+  issue: (id: string | number): Promise<IssueDetail> => (USE_MOCKS ? fake(() => mock.getIssue(token, Number(id)), 260) : cachedRequest(`/issues/${id}`)),
 
-  updateIssue: (id: number, patch: IssueUpdate): Promise<IssueDetail> =>
-    USE_MOCKS ? fake(() => mock.updateIssue(token, id, patch), 420) : request(`/issues/${id}`, { method: "PATCH", json: patch }),
+  updateIssue: (id: string | number, patch: IssueUpdate): Promise<IssueDetail> => {
+    clearApiCache();
+    return USE_MOCKS ? fake(() => mock.updateIssue(token, Number(id), patch), 420) : request(`/issues/${id}`, { method: "PATCH", json: patch });
+  },
 
   feedback: (q: FeedbackQuery): Promise<Page<FeedbackRecord>> =>
-    USE_MOCKS ? fake(() => mock.searchFeedback(token, q), 260) : request(`/feedback${qs(q)}`),
+    USE_MOCKS ? fake(() => mock.searchFeedback(token, q), 260) : cachedRequest(`/feedback${qs(q)}`),
 
   recentFeed: (): Promise<FeedbackRecord[]> =>
-    USE_MOCKS ? fake(() => mock.recentFeed(token), 150) : request(`/feedback${qs({ page_size: 8, status: "approved" })}`).then((p) => (p as Page<FeedbackRecord>).items),
+    USE_MOCKS ? fake(() => mock.recentFeed(token), 150) : cachedRequest(`/feedback${qs({ page_size: 8, status: "approved" })}`).then((p) => (p as Page<FeedbackRecord>).items),
 
   moderationQueue: (): Promise<FeedbackRecord[]> =>
-    USE_MOCKS ? fake(() => mock.moderationQueue(token), 220) : request("/moderation/queue"),
+    USE_MOCKS ? fake(() => mock.moderationQueue(token), 220) : cachedRequest("/moderation/queue"),
 
-  moderate: (id: number, action: "approve" | "reject" | "redact", text?: string): Promise<FeedbackRecord> =>
-    USE_MOCKS
-      ? fake(() => mock.moderate(token, id, action, text), 360)
-      : request(`/feedback/${id}/moderation`, { method: "PATCH", json: { action, text } }),
+  moderate: (id: string | number, action: "approve" | "reject" | "redact", text?: string): Promise<FeedbackRecord> => {
+    clearApiCache();
+    return USE_MOCKS
+      ? fake(() => mock.moderate(token, Number(id), action, text), 360)
+      : request(`/feedback/${id}/moderation`, { method: "PATCH", json: { action, text } });
+  },
 
   analytics: (days = 42): Promise<AnalyticsSummary> =>
-    USE_MOCKS ? fake(() => mock.analytics(token, days), 320) : request(`/analytics/summary${qs({ days })}`),
+    USE_MOCKS ? fake(() => mock.analytics(token, days), 320) : cachedRequest(`/analytics/summary${qs({ days })}`),
 
-  alerts: (): Promise<{ spikes: SpikeAlert[]; trends: Trend[] }> => (USE_MOCKS ? fake(mock.alerts, 200) : request("/alerts")),
+  alerts: (): Promise<{ spikes: SpikeAlert[]; trends: Trend[] }> => (USE_MOCKS ? fake(mock.alerts, 200) : cachedRequest("/alerts")),
+
+  dashboardSummary: (): Promise<{ analytics: AnalyticsSummary; issues: IssueSummary[]; alerts: { spikes: SpikeAlert[]; trends: Trend[] }; stats: PublicStats }> =>
+    USE_MOCKS
+      ? Promise.all([api.analytics(), api.issues({ status: "active" }), api.alerts(), api.publicStats()]).then(
+          ([analytics, issues, alerts, stats]) => ({ analytics, issues, alerts, stats }),
+        )
+      : cachedRequest("/dashboard/summary"),
 };
 
 /**
@@ -193,6 +232,10 @@ export function subscribeLive(onEvent: (e: LiveEvent) => void, onStatus?: (live:
   if (USE_MOCKS) {
     onStatus?.(true);
     return mock.subscribe(onEvent);
+  }
+  if (!token) {
+    onStatus?.(false);
+    return () => {};
   }
   const src = new EventSource(`${API_BASE}/api/stream${qs({ token })}`, { withCredentials: true });
   src.onopen = () => onStatus?.(true);

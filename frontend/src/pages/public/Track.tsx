@@ -36,12 +36,17 @@ function Lookup() {
 
   function go(e: FormEvent) {
     e.preventDefault();
-    const c = value.trim().toUpperCase().replace(/^ECH-?/, "");
-    if (!/^[A-Z0-9]{4}$/.test(c)) {
-      setError("Codes look like ECH-7K2Q: four letters or numbers after ECH-.");
+    const c = value.trim().toUpperCase();
+    if (!c) {
+      setError("Please enter your tracking code.");
       return;
     }
-    nav(`/track/ECH-${c}`);
+    const clean = c.replace(/[^A-Z0-9-]/g, "");
+    if (clean.length < 4 || clean.length > 20) {
+      setError("Please enter a valid tracking code (e.g. V9Y8NEP9 or ECH-7K2Q).");
+      return;
+    }
+    nav(`/track/${encodeURIComponent(clean)}`);
   }
 
   return (
@@ -55,20 +60,19 @@ function Lookup() {
         <label htmlFor="code" className="sr-only">
           Tracking code
         </label>
-        <div className="flex items-center gap-2 rounded-full bg-white p-2 ring-2 ring-transparent focus-within:ring-cobalt">
-          <span className="pl-4 font-mono text-xl text-ink/35">ECH-</span>
+        <div className="flex items-center gap-2 rounded-full bg-white p-2 pl-6 ring-2 ring-transparent focus-within:ring-cobalt">
           <input
             id="code"
-            value={value.replace(/^ECH-?/i, "")}
+            value={value}
             onChange={(e) => {
-              setValue(e.target.value.toUpperCase().slice(0, 8));
+              setValue(e.target.value.toUpperCase().slice(0, 20));
               setError(null);
             }}
             autoCapitalize="characters"
             autoComplete="off"
             spellCheck={false}
-            placeholder="7K2Q"
-            className="min-w-0 flex-1 bg-transparent font-mono text-xl tracking-[0.1em] outline-none placeholder:text-ink/20"
+            placeholder="e.g. V9Y8NEP9 or ECH-7K2Q"
+            className="min-w-0 flex-1 bg-transparent font-mono text-xl tracking-[0.05em] outline-none placeholder:text-ink/20"
           />
           <Button type="submit" variant="ink" icon={<Arrow />}>
             Track

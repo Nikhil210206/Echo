@@ -21,7 +21,7 @@ const NEXT: Partial<Record<IssueStatus, { to: IssueStatus; label: string }>> = {
 };
 
 export default function IssueDetail() {
-  const id = Number(useParams().id);
+  const id = useParams().id ?? "";
   const [issue, setIssue] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -30,6 +30,7 @@ export default function IssueDetail() {
     let alive = true;
     setIssue(null);
     setError(null);
+    if (!id) return;
     api
       .issue(id)
       .then((i) => alive && setIssue(i))
@@ -41,7 +42,7 @@ export default function IssueDetail() {
 
   // Reporters can reopen it or add "me too" while you're looking
   useLive((e) => {
-    if (e.issue?.id === id || e.feedback?.aspects.some((a) => a.issue_id === id)) {
+    if (String(e.issue?.id) === String(id) || e.feedback?.aspects.some((a) => String(a.issue_id) === String(id))) {
       api.issue(id).then(setIssue).catch(() => {});
     }
   });
