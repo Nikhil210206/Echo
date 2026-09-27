@@ -3,7 +3,6 @@ import json
 import asyncio
 import logging
 from typing import List, Optional
-from pydantic import ValidationError
 from app.schemas import AspectResult
 
 logger = logging.getLogger(__name__)
@@ -46,9 +45,14 @@ async def analyze_llm(text: str, timeout: float = 3.0) -> Optional[List[AspectRe
 
     try:
         from google import genai
-        client = genai.Client(api_key=api_key)
+        from google.genai import types
 
+        client = genai.Client(api_key=api_key)
         prompt = LLM_PROMPT_TEMPLATE.format(text=text)
+
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json"
+        )
 
         # Execute API call inside async wrapper with timeout
         loop = asyncio.get_running_loop()
@@ -57,6 +61,7 @@ async def analyze_llm(text: str, timeout: float = 3.0) -> Optional[List[AspectRe
             return client.models.generate_content(
                 model='gemini-2.5-flash',
                 contents=prompt,
+                config=config,
             )
 
         response = await asyncio.wait_for(

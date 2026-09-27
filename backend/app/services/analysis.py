@@ -1,4 +1,4 @@
-﻿from app.schemas import AnalysisPipelineResult, ModerationFlags
+from app.schemas import AnalysisPipelineResult, ModerationFlags
 from app.services.redact import redact_pii
 from app.services.moderation import moderate_text
 from app.services.fallback import analyze_fallback
@@ -52,8 +52,9 @@ async def run_analysis_pipeline(raw_text: str) -> AnalysisPipelineResult:
     else:
         overall_sentiment = "neutral" if aspects else "neutral"
 
+    # Guarantee that raw PII cannot leak to persistence-facing analysis result
     return AnalysisPipelineResult(
-        raw_text=raw_text,
+        raw_text=processed_text,
         text_redacted=processed_text,
         aspects=aspects,
         overall_sentiment=overall_sentiment,

@@ -1,4 +1,4 @@
-﻿from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Union
 from app.schemas import SpikeResult, CategoryTrendResult
 
@@ -37,9 +37,19 @@ def compute_spike_alert(
         if item_cat != category.lower():
             continue
 
-        item_loc = str(item.get("location_name", item.get("location", ""))).lower()
-        if location_name and item_loc and location_name.lower() not in item_loc and item_loc not in location_name.lower():
+        # Exact location identity matching
+        item_loc_id = item.get("location_id")
+        if item_loc_id is not None and str(item_loc_id).strip():
+            # If caller passed location_id in record and location_name matches location_id or location_name string
+            pass
+
+        item_loc_name = str(item.get("location_name", item.get("location", ""))).strip()
+        if not item_loc_name: # Empty location in record must NOT match specific requested location
             continue
+
+        if location_name and location_name.strip():
+            if item_loc_name.lower() != location_name.strip().lower():
+                continue
 
         created_at = item.get("created_at")
         if isinstance(created_at, str):
@@ -69,9 +79,9 @@ def compute_spike_alert(
     is_spike = (spike_ratio >= 2.0) and (c72h >= 5)
 
     display_text = (
-    f"{category.title()} · {location_name}: {c72h} reports in 3 days "
-    f"vs a usual {round(baseline_b, 1)} → {round(spike_ratio, 1)}×"
-)
+        f"{category.title()} · {location_name}: {c72h} reports in 3 days "
+        f"vs a usual {round(baseline_b, 1)} -> {round(spike_ratio, 1)}x"
+    )
 
     return SpikeResult(
         category=category,

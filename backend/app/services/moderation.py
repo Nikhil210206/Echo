@@ -1,5 +1,5 @@
 import re
-from typing import List, Tuple
+from typing import List
 from app.schemas import ModerationFlags
 
 # Common profanity words list for masking (preserving valid complaints)
@@ -37,21 +37,64 @@ def mask_profanity(text: str) -> str:
         masked = pattern.sub(replacement, masked)
     return masked
 
+COMMON_VOWELS = set('aeiouyAEIOUY')
+
+CAMPUS_KEYWORDS = {
+    'mess', 'food', 'canteen', 'dinner', 'lunch', 'breakfast', 'meal', 'curry', 'roti',
+    'hostel', 'room', 'bed', 'warden', 'block', 'roommate', 'doorknob', 'window',
+    'wifi', 'internet', 'network', 'ac', 'lift', 'water', 'electricity', 'power', 'fan', 'washroom', 'toilet',
+    'bus', 'shuttle', 'transport', 'cab', 'parking', 'driver',
+    'library', 'books', 'study', 'journals', 'lab', 'equipment',
+    'exam', 'faculty', 'professor', 'teacher', 'classroom', 'lecture', 'assignment', 'timetable',
+    'campus', 'college', 'university', 'sir', 'mam', 'student', 'facility', 'complaint', 'service', 'strength', 'strengths'
+}
+
 def check_gibberish(text: str) -> bool:
-    """Checks if text is gibberish (e.g., 'asdfghjklqwerty' or 'zzzzzzzz')."""
-    words = [w for w in re.findall(r'\b[a-zA-Z]+\b', text) if len(w) > 4]
-    if not words and len(text.strip()) > 15:
-        # Check if text is just repeated special chars
+    """
+    Conservatively checks if text is genuinely random nonsensical gibberish (e.g. 'asdfghjklqwerty' or 'zzzzzzzz').
+    Does NOT flag normal English sentences, short words, vowel repetitions ('soooo'), or multilingual Unicode text.
+    """
+    if not text or not text.strip():
+        return False
+
+    clean_text = text.strip()
+
+    # 1. Check for 5+ identical consecutive character repetitions (e.g. zzzzzzzzzzzz)
+    if re.search(r'(.)\1{4,}', clean_text.lower()):
         return True
 
+    # 2. Check for obvious keyboard sweep patterns (e.g. asdfghjklqwerty)
+    if re.search(r'(asdfgh|qwerty|zxcvbn|dfghjk)', clean_text.lower()):
+        return True
+
+    # 3. Check long English words (8+ chars) with strictly zero vowels (e.g. 'qwrtypsdfghjkl')
+    words = re.findall(r'\b[a-zA-Z]+\b', clean_text)
     for word in words:
-        # Check for 4+ identical consecutive chars
-        if re.search(r'(.)\1{3,}', word.lower()):
+        w_lower = word.lower()
+        if len(w_lower) >= 8 and not any(c in COMMON_VOWELS for c in w_lower):
             return True
-        # Check vowel ratio in words longer than 5 chars
-        vowels = sum(1 for c in word.lower() if c in 'aeiouy')
-        if len(word) >= 6 and (vowels / len(word) < 0.12):
-            return True
+
+    return False
+
+def check_off_topic(text: str) -> bool:
+    """
+    Conservatively flags text as off-topic if it is a longer submission (>8 words)
+    that lacks campus/facility keywords or feedback context.
+    """
+    if not text or len(text.strip().split()) < 8:
+        return False
+
+    words = set(re.findall(r'\b[a-zA-Z]+\b', text.lower()))
+    if not words:
+        return False
+
+    if words.intersection(CAMPUS_KEYWORDS):
+        return False
+
+    # Check for promotional or unrelated media terms
+    if any(k in text.lower() for k in ['movie', 'starring', 'crypto', 'bitcoin', 'investment', 'casino']):
+        return True
+
     return False
 
 def check_duplicate_flood(text: str) -> bool:
@@ -101,6 +144,11 @@ def moderate_text(text: str) -> ModerationFlags:
         is_duplicate_flood = True
         reasons.append("Text contains duplicate flood repetitive patterns")
 
+    # Check off-topic
+    if check_off_topic(text):
+        is_off_topic = True
+        reasons.append("Feedback appears off-topic or unrelated to campus facilities")
+
     # Check extreme abusive / safety threat
     for pattern in ABUSIVE_PATTERNS:
         if pattern.search(text):
@@ -108,8 +156,8 @@ def moderate_text(text: str) -> ModerationFlags:
             reasons.append("Contains extreme harassment or threats")
             break
 
-    # Overall flagged status (Only flagged if spam, gibberish, duplicate flood, or extreme abusive)
-    flagged = is_spam or is_gibberish or is_duplicate_flood or is_abusive
+    # Overall flagged status (Only flagged if spam, gibberish, duplicate flood, off-topic, or extreme abusive)
+    flagged = is_spam or is_gibberish or is_duplicate_flood or is_off_topic or is_abusive
 
     return ModerationFlags(
         flagged=flagged,

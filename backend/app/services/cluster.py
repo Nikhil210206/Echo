@@ -1,6 +1,6 @@
 import os
 import math
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 
 DEFAULT_THRESHOLD = float(os.getenv("CLUSTERING_THRESHOLD", "0.65"))
@@ -96,6 +96,22 @@ def cluster_aspect(
     return ClusterMatchResult(
         should_join=False,
         matched_issue_id=None,
-        similarity_score=round(max(0.0, max_similarity), 4),
         embedding=aspect_emb
     )
+
+def compute_updated_centroid(current_centroid: List[float], current_count: int, new_embedding: List[float]) -> List[float]:
+    """
+    Pure-function helper to recalculate an issue centroid when a new aspect joins.
+    Formula: updated_i = (current_i * count + new_i) / (count + 1)
+    """
+    if not current_centroid:
+        return new_embedding
+    if not new_embedding or len(current_centroid) != len(new_embedding):
+        return current_centroid
+
+    total_count = current_count + 1
+    updated = [
+        (c * current_count + n) / total_count
+        for c, n in zip(current_centroid, new_embedding)
+    ]
+    return updated

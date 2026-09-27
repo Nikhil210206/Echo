@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import asyncio
 from typing import Optional
 from fastapi import APIRouter, HTTPException
 from app.schemas import AskQueryRequest, AskFilterResult
@@ -12,15 +13,17 @@ def parse_ask_query_fallback(query: str) -> AskFilterResult:
     q_lower = query.lower()
 
     sentiment: Optional[str] = None
-    if "negative" in q_lower or "bad" in q_lower or "complaint" in q_lower:
-        sentiment = "negative"
-    elif "positive" in q_lower or "good" in q_lower or "praise" in q_lower:
+    # Negation and word-boundary matching (e.g. "not good" -> negative; "badminton" -> NOT negative)
+    if re.search(r'\bnot\s+(?:good|great|nice|positive)\b', q_lower) or re.search(r'\b(?:negative|bad|terrible|poor|worst|complaint)\b', q_lower):
+        if not re.search(r'\bbadminton\b', q_lower) or re.search(r'\b(?:negative|terrible|poor|worst|complaint)\b', q_lower):
+            sentiment = "negative"
+    if sentiment is None and re.search(r'\b(?:positive|good|great|praise|excellent)\b', q_lower):
         sentiment = "positive"
 
     category: Optional[str] = None
-    for cat in ["mess", "hostel", "infrastructure", "wifi", "transport", "library", "academics"]:
-        if cat in q_lower or (cat == "wifi" and ("wi-fi" in q_lower or "internet" in q_lower)):
-            category = cat if cat != "wifi" else "infrastructure"
+    for cat in ["mess", "hostel", "infrastructure", "transport", "library", "academics"]:
+        if re.search(r'\b' + cat + r'\b', q_lower) or (cat == "infrastructure" and re.search(r'\b(?:wifi|wi-fi|internet|ac)\b', q_lower)):
+            category = cat
             break
 
     date_range: Optional[str] = None
@@ -55,13 +58,15 @@ async def ask_query_endpoint(body: AskQueryRequest):
     if api_key:
         try:
             from google import genai
+            from google.genai import types
+
             client = genai.Client(api_key=api_key)
             prompt = f"""Convert this natural language feedback query into search filters JSON.
 Query: "{query_text}"
 
 Return JSON matching:
 {{
-  "q": "search term or original query",
+  "q": "{query_text}",
   "sentiment": "positive|negative|neutral|null",
   "category": "mess|hostel|infrastructure|transport|library|academics|null",
   "location": "location name or null",
@@ -70,10 +75,21 @@ Return JSON matching:
 }}
 Return raw JSON only."""
 
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt
+            config = types.GenerateContentConfig(response_mime_type="application/json")
+            loop = asyncio.get_running_loop()
+
+            def _generate():
+                return client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=prompt,
+                    config=config
+                )
+
+            response = await asyncio.wait_for(
+                loop.run_in_executor(None, _generate),
+                timeout=3.0
             )
+
             if response and response.text:
                 cleaned = response.text.strip("`").strip()
                 if cleaned.lower().startswith("json"):

@@ -1,5 +1,5 @@
 import pytest
-from app.services.cluster import compute_embedding, cosine_similarity, cluster_aspect, ClusterMatchResult
+from app.services.cluster import compute_embedding, cosine_similarity, cluster_aspect, compute_updated_centroid
 
 def test_embedding_generation():
     emb = compute_embedding("Wi-Fi network connection down in Block 3")
@@ -10,6 +10,12 @@ def test_cosine_similarity_identical():
     v1 = [1.0, 0.0, 0.0]
     v2 = [1.0, 0.0, 0.0]
     assert cosine_similarity(v1, v2) == 1.0
+
+def test_compute_updated_centroid():
+    current = [1.0, 3.0]
+    new_emb = [3.0, 5.0]
+    updated = compute_updated_centroid(current, 1, new_emb)
+    assert updated == [2.0, 4.0]
 
 def test_cluster_aspect_matching_existing_issue():
     open_issues = [
