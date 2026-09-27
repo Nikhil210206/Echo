@@ -28,22 +28,36 @@ app = FastAPI(
 )
 
 
+def _ping_db():
+    db = SessionLocal()
+    try:
+        db.execute(text("SELECT 1"))
+    finally:
+        db.close()
+
+
 async def db_keep_alive_task():
     """Background loop sending periodic keep-alive pings to keep Neon Postgres pool warm."""
     while True:
         try:
             await asyncio.sleep(15)
-            db = SessionLocal()
-            try:
-                db.execute(text("SELECT 1"))
-            finally:
-                db.close()
+            # In a thread: a blocking query here would stall every request on the event loop
+            await asyncio.to_thread(_ping_db)
         except Exception:
             pass
 
 
+async def warm_db_pool():
+    """Opens a few connections up front; each new connection to a remote database costs several round trips."""
+    try:
+        await asyncio.gather(*(asyncio.to_thread(_ping_db) for _ in range(12)))
+    except Exception:
+        pass
+
+
 @app.on_event("startup")
 async def startup_event():
+    asyncio.create_task(warm_db_pool())
     asyncio.create_task(db_keep_alive_task())
 
 

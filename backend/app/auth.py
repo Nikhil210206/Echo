@@ -1,6 +1,7 @@
 import os
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends
@@ -8,7 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, make_transient_to_detached
 
 from app.db import get_db
 from app.errors import AppError
@@ -109,6 +110,11 @@ async def get_current_user(
             status_code=401,
         )
 
+    cached = _user_cache.get(user_id)
+    if cached and time.monotonic() - cached[0] < USER_CACHE_SECONDS:
+        # Attach the cached copy to this session without querying
+        return db.merge(_detached_copy(cached[1]), load=False)
+
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise AppError(
@@ -117,7 +123,27 @@ async def get_current_user(
             status_code=401,
         )
 
+    _user_cache[user_id] = (time.monotonic(), _detached_copy(user))
     return user
+
+
+# Every authenticated request needs the user; caching it briefly saves a database round trip per request.
+# Role or team changes take effect within this many seconds.
+USER_CACHE_SECONDS = 60
+_user_cache: Dict[str, Tuple[float, User]] = {}
+
+
+def _detached_copy(user: User) -> User:
+    copy = User(
+        id=user.id,
+        name=user.name,
+        email=user.email,
+        password_hash=user.password_hash,
+        role=user.role,
+        team=user.team,
+    )
+    make_transient_to_detached(copy)
+    return copy
 
 
 def require_role(*roles: Any):

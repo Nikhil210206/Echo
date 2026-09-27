@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -7,7 +7,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, defer, joinedload
 
 from app.auth import get_current_user
-from app.db import get_db
+from app.db import get_db, run_parallel
 from app.errors import AppError
 from app.models import (
     Aspect,
@@ -196,21 +196,56 @@ def moderate_feedback(
     return record
 
 
-@router.get("/analytics/summary")
-def get_analytics_summary(
-    days: int = Query(42, ge=1),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> Dict[str, Any]:
-    """Get analytics summary including sentiment over time, topic sentiment, heatmap, pipeline, and totals (Admin only)."""
+def _require_admin(current_user: User) -> None:
     user_role_str = (
         current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
     )
     if user_role_str != "admin":
         raise AppError("FORBIDDEN", "Admin access required", status_code=403)
 
+
+# The analytics, alerts and dashboard endpoints are built from small independent queries that do their
+# counting in SQL. Each is a task taking its own session, so they run in parallel (see run_parallel):
+# against a remote database the page then costs roughly one round trip instead of one per query.
+
+
+def _run_tasks(tasks: Dict[str, Callable[[Session], Any]]) -> Dict[str, Any]:
+    return dict(zip(tasks.keys(), run_parallel(*tasks.values())))
+
+
+def _analytics_tasks(days: int) -> Dict[str, Callable[[Session], Any]]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    sentiment = func.lower(func.coalesce(Feedback.overall_sentiment, "neutral"))
+    aspect_sentiment = func.lower(func.coalesce(Aspect.sentiment, "neutral"))
+    category = func.coalesce(func.nullif(Aspect.category, ""), "general")
+
+    return {
+        "sentiment_rows": lambda db: db.query(func.date(Feedback.created_at), sentiment, func.count(Feedback.id))
+        .filter(Feedback.created_at >= cutoff)
+        .group_by(func.date(Feedback.created_at), sentiment)
+        .all(),
+        "topic_rows": lambda db: db.query(category, aspect_sentiment, func.count(Aspect.id))
+        .join(Feedback, Feedback.id == Aspect.feedback_id)
+        .filter(Feedback.created_at >= cutoff)
+        .group_by(category, aspect_sentiment)
+        .all(),
+        "locations": lambda db: db.query(Location.id, Location.name).all(),
+        "categories": lambda db: [c for (c,) in db.query(Aspect.category).distinct().all() if c],
+        "heatmap_rows": lambda db: db.query(Feedback.location_id, Aspect.category, func.count(Aspect.id))
+        .join(Feedback, Feedback.id == Aspect.feedback_id)
+        .filter(Aspect.sentiment == "negative", Feedback.created_at >= cutoff)
+        .group_by(Feedback.location_id, Aspect.category)
+        .all(),
+        "status_rows": lambda db: db.query(Issue.status, func.count(Issue.id)).group_by(Issue.status).all(),
+        "avg_resolve_seconds": lambda db: db.query(func.avg(func.extract("epoch", Issue.resolved_at - Issue.created_at)))
+        .filter(Issue.resolved_at.isnot(None), Issue.created_at.isnot(None))
+        .scalar(),
+        "feedback_count": lambda db: db.query(func.count(Feedback.id)).scalar() or 0,
+    }
+
+
+def _assemble_analytics(days: int, r: Dict[str, Any]) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=days)
 
     # 1. sentiment_over_time
     start_date = (now - timedelta(days=days)).date()
@@ -223,148 +258,72 @@ def get_analytics_summary(
         date_map[d_str] = {"date": d_str, "positive": 0, "neutral": 0, "negative": 0}
         curr_d += timedelta(days=1)
 
-    feedbacks_in_period = db.query(Feedback).filter(Feedback.created_at >= cutoff).all()
-
-    for fb in feedbacks_in_period:
-        if fb.created_at:
-            d_str = fb.created_at.strftime("%Y-%m-%d")
-            if d_str in date_map:
-                sent = (fb.overall_sentiment or "neutral").lower()
-                if sent == "positive":
-                    date_map[d_str]["positive"] += 1
-                elif sent == "negative":
-                    date_map[d_str]["negative"] += 1
-                else:
-                    date_map[d_str]["neutral"] += 1
-
-    sentiment_over_time = list(date_map.values())
+    for day, sent, count in r["sentiment_rows"]:
+        d_str = day.strftime("%Y-%m-%d")
+        if d_str in date_map:
+            key = sent if sent in ("positive", "negative") else "neutral"
+            date_map[d_str][key] += count
 
     # 2. topic_sentiment
-    aspects_in_period = (
-        db.query(Aspect)
-        .options(defer(Aspect.embedding))
-        .join(Feedback, Feedback.id == Aspect.feedback_id)
-        .filter(Feedback.created_at >= cutoff)
-        .all()
-    )
-
-    topic_map: Dict[str, Dict[str, int]] = {}
-    for a in aspects_in_period:
-        cat = a.category or "general"
-        if cat not in topic_map:
-            topic_map[cat] = {"category": cat, "positive": 0, "negative": 0}
-        sent = (a.sentiment or "neutral").lower()
-        if sent == "positive":
-            topic_map[cat]["positive"] += 1
-        elif sent == "negative":
-            topic_map[cat]["negative"] += 1
-
-    topic_sentiment = list(topic_map.values())
+    topic_map: Dict[str, Dict[str, Any]] = {}
+    for cat, sent, count in r["topic_rows"]:
+        entry = topic_map.setdefault(cat, {"category": cat, "positive": 0, "negative": 0})
+        if sent in ("positive", "negative"):
+            entry[sent] += count
 
     # 3. heatmap
-    locations = db.query(Location).all()
-    loc_names = [l.name for l in locations]
-    categories_set = set(a.category for a in db.query(Aspect.category).distinct().all() if a[0])
-    cat_names = sorted(list(categories_set)) if categories_set else ["general", "infrastructure", "hostel", "mess"]
-
-    values_matrix = [[0 for _ in cat_names] for _ in loc_names]
-    loc_index_map = {loc_name: idx for idx, loc_name in enumerate(loc_names)}
+    loc_names = [name for _, name in r["locations"]]
+    loc_index_map = {loc_id: idx for idx, (loc_id, _) in enumerate(r["locations"])}
+    cat_names = sorted(set(r["categories"])) or ["general", "infrastructure", "hostel", "mess"]
     cat_index_map = {cat_name: idx for idx, cat_name in enumerate(cat_names)}
 
-    negative_aspects = (
-        db.query(Aspect)
-        .options(
-            defer(Aspect.embedding),
-            joinedload(Aspect.feedback).joinedload(Feedback.location),
-        )
-        .join(Feedback, Feedback.id == Aspect.feedback_id)
-        .filter(Aspect.sentiment == "negative", Feedback.created_at >= cutoff)
-        .all()
-    )
-
-    for a in negative_aspects:
-        if a.feedback and a.feedback.location:
-            l_name = a.feedback.location.name
-            c_name = a.category
-            if l_name in loc_index_map and c_name in cat_index_map:
-                r = loc_index_map[l_name]
-                c = cat_index_map[c_name]
-                values_matrix[r][c] += 1
-
-    heatmap = {
-        "locations": loc_names,
-        "categories": cat_names,
-        "values": values_matrix,
-    }
+    values_matrix = [[0 for _ in cat_names] for _ in loc_names]
+    for loc_id, cat, count in r["heatmap_rows"]:
+        if loc_id in loc_index_map and cat in cat_index_map:
+            values_matrix[loc_index_map[loc_id]][cat_index_map[cat]] += count
 
     # 4. pipeline
-    issues = db.query(Issue).all()
-    pipeline_counts = {
-        "open": 0,
-        "acknowledged": 0,
-        "in_progress": 0,
-        "resolved": 0,
-        "reopened": 0,
-    }
-
-    resolved_days = []
-    for issue in issues:
-        status_str = issue.status.value if hasattr(issue.status, "value") else str(issue.status)
+    pipeline_counts = {"open": 0, "acknowledged": 0, "in_progress": 0, "resolved": 0, "reopened": 0}
+    for status, count in r["status_rows"]:
+        status_str = status.value if hasattr(status, "value") else str(status)
         if status_str in pipeline_counts:
-            pipeline_counts[status_str] += 1
+            pipeline_counts[status_str] += count
 
-        if issue.resolved_at and issue.created_at:
-            delta = (issue.resolved_at - issue.created_at).total_seconds() / 86400.0
-            resolved_days.append(delta)
-
-    avg_days_to_resolve = round(sum(resolved_days) / len(resolved_days), 2) if resolved_days else 0.0
-
-    pipeline = [
-        {"status": "open", "count": pipeline_counts["open"]},
-        {"status": "acknowledged", "count": pipeline_counts["acknowledged"]},
-        {"status": "in_progress", "count": pipeline_counts["in_progress"]},
-        {"status": "resolved", "count": pipeline_counts["resolved"]},
-        {"status": "reopened", "count": pipeline_counts["reopened"]},
-    ]
-
-    # 5. totals
-    total_feedback = db.query(func.count(Feedback.id)).scalar() or 0
-    total_issues = len(issues)
-
-    totals = {
-        "feedback_count": total_feedback,
-        "issue_count": total_issues,
-    }
+    avg_seconds = r["avg_resolve_seconds"]
+    avg_days_to_resolve = round(float(avg_seconds) / 86400.0, 2) if avg_seconds is not None else 0.0
 
     return {
-        "sentiment_over_time": sentiment_over_time,
-        "topic_sentiment": topic_sentiment,
-        "heatmap": heatmap,
-        "pipeline": pipeline,
+        "sentiment_over_time": list(date_map.values()),
+        "topic_sentiment": list(topic_map.values()),
+        "heatmap": {"locations": loc_names, "categories": cat_names, "values": values_matrix},
+        "pipeline": [{"status": s, "count": c} for s, c in pipeline_counts.items()],
         "avg_days_to_resolve": avg_days_to_resolve,
-        "totals": totals,
+        "totals": {
+            "feedback_count": r["feedback_count"],
+            "issue_count": sum(count for _, count in r["status_rows"]),
+        },
     }
 
 
-@router.get("/alerts")
-def get_alerts(
+@router.get("/analytics/summary")
+def get_analytics_summary(
+    days: int = Query(42, ge=1),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Detect negative feedback spikes and category trends (Admin only)."""
-    user_role_str = (
-        current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
-    )
-    if user_role_str != "admin":
-        raise AppError("FORBIDDEN", "Admin access required", status_code=403)
+    """Get analytics summary including sentiment over time, topic sentiment, heatmap, pipeline, and totals (Admin only)."""
+    _require_admin(current_user)
+    return _assemble_analytics(days, _run_tasks(_analytics_tasks(days)))
 
+
+def _alerts_tasks() -> Dict[str, Callable[[Session], Any]]:
     now = datetime.now(timezone.utc)
     hrs_72_ago = now - timedelta(hours=72)
     days_28_ago = now - timedelta(days=28)
+    seven_days_ago = now - timedelta(days=7)
+    fourteen_days_ago = now - timedelta(days=14)
 
-    # 1. Spikes calculation: single SQL query joining Aspect, Feedback, Location
-    spikes_raw = (
-        db.query(
+    return {
+        "spikes_raw": lambda db: db.query(
             Aspect.category,
             Location.name,
             func.count(Aspect.id).filter(Feedback.created_at >= hrs_72_ago).label("current_cnt"),
@@ -374,12 +333,26 @@ def get_alerts(
         .join(Location, Location.id == Feedback.location_id)
         .filter(Aspect.sentiment == "negative", Feedback.created_at >= days_28_ago)
         .group_by(Aspect.category, Location.name)
-        .all()
-    )
+        .all(),
+        "trends_raw": lambda db: db.query(
+            Aspect.category,
+            func.count(Aspect.id).filter(Feedback.created_at >= seven_days_ago).label("this_week"),
+            func.count(Aspect.id).filter((Feedback.created_at >= fourteen_days_ago) & (Feedback.created_at < seven_days_ago)).label("last_week"),
+        )
+        .join(Feedback, Feedback.id == Aspect.feedback_id)
+        .filter(Aspect.sentiment == "negative", Feedback.created_at >= fourteen_days_ago)
+        .group_by(Aspect.category)
+        .all(),
+        # Same query as in _analytics_tasks, so the dashboard runs it once
+        "categories": lambda db: [c for (c,) in db.query(Aspect.category).distinct().all() if c],
+    }
 
+
+def _assemble_alerts(r: Dict[str, Any]) -> Dict[str, Any]:
+    # 1. Spikes: last 72h vs the average 3-day window of the 25 days before
     spikes = []
     windows_count = 28.0 / 3.0
-    for cat, loc_name, current, prev_count in spikes_raw:
+    for cat, loc_name, current, prev_count in r["spikes_raw"]:
         current = current or 0
         prev_count = prev_count or 0
         baseline = prev_count / windows_count
@@ -397,27 +370,9 @@ def get_alerts(
                 }
             )
 
-    # 2. Trends calculation: single SQL query joining Aspect and Feedback
-    seven_days_ago = now - timedelta(days=7)
-    fourteen_days_ago = now - timedelta(days=14)
-
-    trends_raw = (
-        db.query(
-            Aspect.category,
-            func.count(Aspect.id).filter(Feedback.created_at >= seven_days_ago).label("this_week"),
-            func.count(Aspect.id).filter((Feedback.created_at >= fourteen_days_ago) & (Feedback.created_at < seven_days_ago)).label("last_week"),
-        )
-        .join(Feedback, Feedback.id == Aspect.feedback_id)
-        .filter(Aspect.sentiment == "negative", Feedback.created_at >= fourteen_days_ago)
-        .group_by(Aspect.category)
-        .all()
-    )
-
-    trends_dict = {cat: {"this_week": tw or 0, "last_week": lw or 0} for cat, tw, lw in trends_raw}
-
-    # Ensure all distinct categories are present
-    all_cats = [c[0] for c in db.query(Aspect.category).distinct().all() if c[0]]
-    for cat in all_cats:
+    # 2. Trends: this week vs last week, for every category ever seen
+    trends_dict = {cat: {"this_week": tw or 0, "last_week": lw or 0} for cat, tw, lw in r["trends_raw"]}
+    for cat in r["categories"]:
         if cat not in trends_dict:
             trends_dict[cat] = {"this_week": 0, "last_week": 0}
 
@@ -427,45 +382,44 @@ def get_alerts(
         last_w = counts["last_week"]
         effective_last_w = max(last_w, 1)
         change_pct = round(((this_w - last_w) / effective_last_w) * 100.0, 2)
+        trends.append({"category": cat, "change_pct": change_pct, "this_week": this_w, "last_week": last_w})
 
-        trends.append(
-            {
-                "category": cat,
-                "change_pct": change_pct,
-                "this_week": this_w,
-                "last_week": last_w,
-            }
-        )
+    return {"spikes": spikes, "trends": trends}
 
-    return {
-        "spikes": spikes,
-        "trends": trends,
-    }
+
+@router.get("/alerts")
+def get_alerts(
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Detect negative feedback spikes and category trends (Admin only)."""
+    _require_admin(current_user)
+    return _assemble_alerts(_run_tasks(_alerts_tasks()))
 
 
 @router.get("/dashboard/summary")
 def get_dashboard_summary(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Single consolidated endpoint for Admin Dashboard to eliminate multi-request latency."""
-    user_role_str = (
-        current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
-    )
-    if user_role_str != "admin":
-        raise AppError("FORBIDDEN", "Admin access required", status_code=403)
+    _require_admin(current_user)
 
     from app.routers.issues import list_issues
     from app.routers.public import get_public_stats
 
-    analytics_data = get_analytics_summary(days=42, current_user=current_user, db=db)
-    active_issues = list_issues(status="active", current_user=current_user, db=db)
-    alerts_data = get_alerts(current_user=current_user, db=db)
-    stats_data = get_public_stats(db=db)
+    r = _run_tasks(
+        {
+            **_analytics_tasks(42),
+            **_alerts_tasks(),
+            "issues": lambda db: list_issues(
+                status="active", category=None, assignee_id=None, current_user=current_user, db=db
+            ),
+            "stats": lambda db: get_public_stats(db=db),
+        }
+    )
 
     return {
-        "analytics": analytics_data,
-        "issues": active_issues,
-        "alerts": alerts_data,
-        "stats": stats_data,
+        "analytics": _assemble_analytics(42, r),
+        "issues": r["issues"],
+        "alerts": _assemble_alerts(r),
+        "stats": r["stats"],
     }

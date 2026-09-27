@@ -237,15 +237,49 @@ export function subscribeLive(onEvent: (e: LiveEvent) => void, onStatus?: (live:
     onStatus?.(false);
     return () => {};
   }
-  const src = new EventSource(`${API_BASE}/api/stream${qs({ token })}`, { withCredentials: true });
-  src.onopen = () => onStatus?.(true);
-  src.onerror = () => onStatus?.(false);
-  src.onmessage = (m) => {
-    try {
-      onEvent(JSON.parse(m.data) as LiveEvent);
-    } catch {
-      /* ignore malformed frames */
-    }
+  // All subscribers share one EventSource. Each open stream permanently holds one of the browser's
+  // ~6 connections to the API host, so one per subscriber starved normal requests.
+  if (live && live.token !== token) closeLive();
+  if (!live) live = openLive(token);
+  const sub = { onEvent, onStatus };
+  live.subs.add(sub);
+  onStatus?.(live.connected);
+  const mine = live;
+  return () => {
+    mine.subs.delete(sub);
+    if (mine.subs.size === 0 && live === mine) closeLive();
   };
-  return () => src.close();
+}
+
+type LiveSub = { onEvent: (e: LiveEvent) => void; onStatus?: (live: boolean) => void };
+let live: { token: string; src: EventSource; subs: Set<LiveSub>; connected: boolean } | null = null;
+
+function openLive(tok: string) {
+  const conn = {
+    token: tok,
+    src: new EventSource(`${API_BASE}/api/stream${qs({ token: tok })}`, { withCredentials: true }),
+    subs: new Set<LiveSub>(),
+    connected: false,
+  };
+  const setStatus = (up: boolean) => {
+    conn.connected = up;
+    conn.subs.forEach((s) => s.onStatus?.(up));
+  };
+  conn.src.onopen = () => setStatus(true);
+  conn.src.onerror = () => setStatus(false);
+  conn.src.onmessage = (m) => {
+    let e: LiveEvent;
+    try {
+      e = JSON.parse(m.data) as LiveEvent;
+    } catch {
+      return; /* ignore malformed frames */
+    }
+    conn.subs.forEach((s) => s.onEvent(e));
+  };
+  return conn;
+}
+
+function closeLive() {
+  live?.src.close();
+  live = null;
 }

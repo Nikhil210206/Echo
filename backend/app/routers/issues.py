@@ -3,11 +3,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, defer, joinedload, selectinload
 
 from app.auth import get_current_user
-from app.db import get_db
+from app.db import get_db, run_parallel
 from app.errors import AppError
 from app.models import (
     Aspect,
@@ -35,115 +35,32 @@ class IssueUpdateRequest(BaseModel):
 
 
 # --- Helper Functions ---
-def get_issue_report_count(db: Session, issue_id: str) -> int:
-    """Returns the count of distinct feedback items linked to an issue."""
-    return (
-        db.query(func.count(func.distinct(Aspect.feedback_id)))
-        .filter(Aspect.issue_id == issue_id)
-        .scalar()
-        or 0
-    )
+def _as_utc(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
-def calculate_issue_score_only(db: Session, issue: Issue) -> float:
-    """Calculates recency_weighted * negative_share * urgency_multiplier score for an issue."""
-    now = datetime.now(timezone.utc)
-    seven_days_ago = now - timedelta(days=7)
+def compute_issue_metrics(aspects: List[Aspect]) -> Dict[str, Any]:
+    """recency_weighted * negative_share * urgency_multiplier, from an issue's already-loaded aspects
+    (and their feedback), so no extra queries are needed."""
+    seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
 
-    # IN-subquery instead of JOIN + DISTINCT: Postgres can't DISTINCT over the json `flags` column
-    linked_feedback = (
-        db.query(Feedback)
-        .filter(Feedback.id.in_(db.query(Aspect.feedback_id).filter(Aspect.issue_id == issue.id)))
-        .all()
-    )
-
-    recent_reports = sum(
-        1
-        for fb in linked_feedback
-        if fb.created_at
-        and (
-            fb.created_at.replace(tzinfo=timezone.utc)
-            if fb.created_at.tzinfo is None
-            else fb.created_at
-        )
-        >= seven_days_ago
-    )
+    linked_feedback = {a.feedback.id: a.feedback for a in aspects if a.feedback is not None}.values()
+    recent_reports = sum(1 for fb in linked_feedback if fb.created_at and _as_utc(fb.created_at) >= seven_days_ago)
     older_reports = len(linked_feedback) - recent_reports
     recency_weighted = recent_reports + (older_reports * 0.5)
 
-    linked_aspects = db.query(Aspect).filter(Aspect.issue_id == issue.id).all()
-    total_aspects = len(linked_aspects)
-
+    total_aspects = len(aspects)
     negative_share = (
-        (sum(1 for a in linked_aspects if a.sentiment == "negative") / total_aspects)
+        round(sum(1 for a in aspects if a.sentiment == "negative") / total_aspects, 4)
         if total_aspects > 0
         else 0.0
     )
 
     urgency_multiplier = 1
-    if any(a.urgency == "critical" for a in linked_aspects):
+    if any(a.urgency == "critical" for a in aspects):
         urgency_multiplier = 3
-    elif any(a.urgency == "high" for a in linked_aspects):
+    elif any(a.urgency == "high" for a in aspects):
         urgency_multiplier = 2
-
-    return round(recency_weighted * negative_share * urgency_multiplier, 4)
-
-
-def calculate_issue_breakdown(db: Session, issue: Issue) -> Dict[str, Any]:
-    """Calculates the breakdown metrics and global rank for an issue."""
-    now = datetime.now(timezone.utc)
-    seven_days_ago = now - timedelta(days=7)
-
-    # IN-subquery instead of JOIN + DISTINCT: Postgres can't DISTINCT over the json `flags` column
-    linked_feedback = (
-        db.query(Feedback)
-        .filter(Feedback.id.in_(db.query(Aspect.feedback_id).filter(Aspect.issue_id == issue.id)))
-        .all()
-    )
-
-    recent_reports = sum(
-        1
-        for fb in linked_feedback
-        if fb.created_at
-        and (
-            fb.created_at.replace(tzinfo=timezone.utc)
-            if fb.created_at.tzinfo is None
-            else fb.created_at
-        )
-        >= seven_days_ago
-    )
-    older_reports = len(linked_feedback) - recent_reports
-    recency_weighted = recent_reports + (older_reports * 0.5)
-
-    linked_aspects = db.query(Aspect).filter(Aspect.issue_id == issue.id).all()
-    total_aspects = len(linked_aspects)
-
-    negative_share = (
-        round(sum(1 for a in linked_aspects if a.sentiment == "negative") / total_aspects, 4)
-        if total_aspects > 0
-        else 0.0
-    )
-
-    urgency_multiplier = 1
-    if any(a.urgency == "critical" for a in linked_aspects):
-        urgency_multiplier = 3
-    elif any(a.urgency == "high" for a in linked_aspects):
-        urgency_multiplier = 2
-
-    score = round(recency_weighted * negative_share * urgency_multiplier, 4)
-
-    # Fast rank calculation among active issues using indexed priority_score
-    active_issues = (
-        db.query(Issue.id, Issue.priority_score)
-        .filter(Issue.status != IssueStatus.resolved)
-        .order_by(Issue.priority_score.desc().nullslast())
-        .all()
-    )
-    rank = 0
-    for idx, (iss_id, _) in enumerate(active_issues, start=1):
-        if iss_id == issue.id:
-            rank = idx
-            break
 
     return {
         "recent_reports": recent_reports,
@@ -151,17 +68,17 @@ def calculate_issue_breakdown(db: Session, issue: Issue) -> Dict[str, Any]:
         "recency_weighted": recency_weighted,
         "negative_share": negative_share,
         "urgency_multiplier": urgency_multiplier,
-        "score": score,
-        "rank": rank,
+        "score": round(recency_weighted * negative_share * urgency_multiplier, 4),
     }
 
 
 def build_issue_summary_response(db: Session, issue: Issue) -> Dict[str, Any]:
-    """Builds complete dictionary for IssueSummary shape."""
+    """Builds complete dictionary for IssueSummary shape. Expects issue.location, issue.assignee and
+    issue.aspects to be eager-loaded by the caller."""
     status_str = issue.status.value if hasattr(issue.status, "value") else str(issue.status)
     loc_name = issue.location.name if issue.location else "Unknown"
 
-    aspects = issue.aspects if hasattr(issue, "aspects") and issue.aspects is not None else db.query(Aspect).filter(Aspect.issue_id == issue.id).all()
+    aspects = issue.aspects
     total_aspects = len(aspects)
     neg_share = (
         round(sum(1 for a in aspects if a.sentiment == "negative") / total_aspects, 4)
@@ -182,10 +99,10 @@ def build_issue_summary_response(db: Session, issue: Issue) -> Dict[str, Any]:
     score = (
         float(issue.priority_score)
         if issue.priority_score is not None
-        else calculate_issue_score_only(db, issue)
+        else compute_issue_metrics(aspects)["score"]
     )
 
-    report_count = len(set(a.feedback_id for a in aspects if a.feedback_id)) if hasattr(issue, "aspects") and issue.aspects is not None else get_issue_report_count(db, issue.id)
+    report_count = len(set(a.feedback_id for a in aspects if a.feedback_id))
 
     return {
         "id": issue.id,
@@ -206,38 +123,24 @@ def build_issue_summary_response(db: Session, issue: Issue) -> Dict[str, Any]:
     }
 
 
-def build_issue_detail_response(db: Session, issue: Issue) -> Dict[str, Any]:
-    """Builds the full detail response dictionary for an issue."""
-    base_summary = build_issue_summary_response(db, issue)
-    breakdown = calculate_issue_breakdown(db, issue)
-
-    events = (
-        db.query(IssueEvent)
-        .filter(IssueEvent.issue_id == issue.id)
-        .order_by(IssueEvent.created_at.asc())
-        .all()
-    )
-    events_list = []
-    for ev in events:
-        actor_name = "Echo"
-        if ev.actor_id:
-            user = db.query(User).filter(User.id == ev.actor_id).first()
-            if user:
-                actor_name = user.name
-        events_list.append(
-            {
-                "id": ev.id,
-                "from_status": ev.from_status,
-                "to_status": ev.to_status,
-                "actor": actor_name,
-                "note": ev.note,
-                "created_at": ev.created_at,
-            }
+def _load_issue_core(db: Session, issue_id: str) -> Optional[Dict[str, Any]]:
+    """Issue with location, assignee, aspects and their feedback in two queries, turned into plain dicts."""
+    issue = (
+        db.query(Issue)
+        .options(
+            defer(Issue.centroid),
+            joinedload(Issue.location),
+            joinedload(Issue.assignee),
+            selectinload(Issue.aspects).defer(Aspect.embedding).joinedload(Aspect.feedback),
         )
+        .filter(Issue.id == issue_id)
+        .first()
+    )
+    if not issue:
+        return None
 
-    aspects = db.query(Aspect).filter(Aspect.issue_id == issue.id).all()
     evidence_list = []
-    for a in aspects:
+    for a in issue.aspects:
         fb_obj = a.feedback
         evidence_list.append(
             {
@@ -251,25 +154,79 @@ def build_issue_detail_response(db: Session, issue: Issue) -> Dict[str, Any]:
             }
         )
 
-    fixed_count = (
-        db.query(func.count(Verification.id))
-        .filter(Verification.issue_id == issue.id, Verification.fixed == True)  # noqa: E712
-        .scalar()
-        or 0
-    )
-    not_fixed_count = (
-        db.query(func.count(Verification.id))
-        .filter(Verification.issue_id == issue.id, Verification.fixed == False)  # noqa: E712
-        .scalar()
-        or 0
-    )
-    verification_summary = {"fixed": fixed_count, "not_fixed": not_fixed_count}
-
     return {
-        **base_summary,
-        "breakdown": breakdown,
-        "events": events_list,
+        "assignee_id": issue.assignee_id,
+        "summary": build_issue_summary_response(db, issue),
+        "metrics": compute_issue_metrics(issue.aspects),
         "evidence": evidence_list,
+    }
+
+
+def _load_issue_events(db: Session, issue_id: str) -> List[Dict[str, Any]]:
+    rows = (
+        db.query(IssueEvent, User.name)
+        .outerjoin(User, User.id == IssueEvent.actor_id)
+        .filter(IssueEvent.issue_id == issue_id)
+        .order_by(IssueEvent.created_at.asc())
+        .all()
+    )
+    return [
+        {
+            "id": ev.id,
+            "from_status": ev.from_status,
+            "to_status": ev.to_status,
+            "actor": actor_name or "Echo",
+            "note": ev.note,
+            "created_at": ev.created_at,
+        }
+        for ev, actor_name in rows
+    ]
+
+
+def _load_issue_verifications(db: Session, issue_id: str) -> Dict[str, int]:
+    counts = dict(
+        db.query(Verification.fixed, func.count(Verification.id))
+        .filter(Verification.issue_id == issue_id)
+        .group_by(Verification.fixed)
+        .all()
+    )
+    return {"fixed": counts.get(True, 0), "not_fixed": counts.get(False, 0)}
+
+
+def _load_issue_rank(db: Session, issue_id: str) -> int:
+    """1-based position among active issues by priority_score (0 if the issue is resolved)."""
+    target = select(Issue.priority_score, Issue.status).where(Issue.id == issue_id).subquery()
+    row = (
+        db.query(
+            target.c.status,
+            select(func.count(Issue.id))
+            .where(Issue.status != IssueStatus.resolved, Issue.priority_score > target.c.priority_score)
+            .scalar_subquery(),
+        )
+        .first()
+    )
+    if not row or row[0] == IssueStatus.resolved:
+        return 0
+    return row[1] + 1
+
+
+def build_issue_detail_response(issue_id: str) -> Optional[Tuple[Optional[str], Dict[str, Any]]]:
+    """Builds the full detail response for an issue, running its independent queries in parallel.
+    Returns (assignee_id, response), or None if the issue doesn't exist."""
+    core, events_list, verification_summary, rank = run_parallel(
+        lambda db: _load_issue_core(db, issue_id),
+        lambda db: _load_issue_events(db, issue_id),
+        lambda db: _load_issue_verifications(db, issue_id),
+        lambda db: _load_issue_rank(db, issue_id),
+    )
+    if core is None:
+        return None
+
+    return core["assignee_id"], {
+        **core["summary"],
+        "breakdown": {**core["metrics"], "rank": rank},
+        "events": events_list,
+        "evidence": core["evidence"],
         "verification": verification_summary,
     }
 
@@ -349,9 +306,10 @@ def get_issue(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Retrieve issue detail with breakdown, events, evidence, and verification."""
-    issue = db.query(Issue).filter(Issue.id == id).first()
-    if not issue:
+    result = build_issue_detail_response(id)
+    if result is None:
         raise AppError("NOT_FOUND", f"Issue with id '{id}' not found", status_code=404)
+    assignee_id, detail = result
 
     user_role_str = (
         current_user.role.value
@@ -359,10 +317,10 @@ def get_issue(
         else str(current_user.role)
     )
 
-    if user_role_str == "staff" and issue.assignee_id != current_user.id:
+    if user_role_str == "staff" and assignee_id != current_user.id:
         raise AppError("FORBIDDEN", "Staff can only view assigned issues", status_code=403)
 
-    return build_issue_detail_response(db, issue)
+    return detail
 
 
 @router.patch("/issues/{id}")
@@ -437,24 +395,23 @@ def update_issue(
         issue.public_response = payload.public_response
 
     db.commit()
-    db.refresh(issue)
+
+    _, detail = build_issue_detail_response(id)
 
     if payload.status is not None and old_status_str != payload.status:
-        report_count = get_issue_report_count(db, issue.id)
-        status_str = issue.status.value if hasattr(issue.status, "value") else str(issue.status)
         broadcast_event(
             "issue_status",
             {
                 "issue": {
-                    "id": issue.id,
-                    "title": issue.title,
-                    "status": status_str,
-                    "report_count": report_count,
+                    "id": detail["id"],
+                    "title": detail["title"],
+                    "status": detail["status"],
+                    "report_count": detail["report_count"],
                 }
             },
         )
 
-    return build_issue_detail_response(db, issue)
+    return detail
 
 
 @router.get("/users")

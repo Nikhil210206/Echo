@@ -1,10 +1,11 @@
+import asyncio
 import secrets
 import string
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -247,13 +248,19 @@ async def submit_feedback(
             fields={"text": "too_long"},
         )
 
-    loc = db.query(Location).filter(Location.slug == payload.location_slug).first()
+    # Database work runs in a thread: blocking queries in this async handler would stall every other request
+    loc = await asyncio.to_thread(lambda: db.query(Location).filter(Location.slug == payload.location_slug).first())
     if not loc:
         raise AppError("NOT_FOUND", f"Location with slug '{payload.location_slug}' not found", status_code=404)
 
     # 1. Run real analysis pipeline
     analysis_result = await run_analysis_pipeline(payload.text)
 
+    return await asyncio.to_thread(_store_feedback, db, payload, loc, analysis_result)
+
+
+def _store_feedback(db: Session, payload: FeedbackCreateRequest, loc: Location, analysis_result) -> Dict[str, Any]:
+    """Saves analyzed feedback, clusters its negative aspects into issues and rescores them."""
     # 2. Build flags from moderation booleans
     mod = analysis_result.moderation
     flags = []
@@ -575,43 +582,39 @@ def verify_issue_resolution(
 @router.get("/public/stats")
 def get_public_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
     """Get aggregated platform statistics."""
-    people_heard = db.query(func.count(func.distinct(Feedback.tracking_code))).scalar() or 0
-    total_feedback = db.query(func.count(Feedback.id)).scalar() or 0
+    # One round trip: every figure is a scalar subquery of a single SELECT
+    def scalar(*columns_and_filters):
+        column, *filters = columns_and_filters
+        return select(column).where(*filters).scalar_subquery()
 
-    # Combine issue stats into 1 query
-    iss_stats = db.query(
-        func.count(Issue.id).label("total"),
-        func.count(Issue.id).filter(Issue.public_response.isnot(None), Issue.public_response != "").label("with_resp"),
-        func.count(Issue.id).filter(Issue.status == IssueStatus.resolved).label("resolved_cnt"),
-    ).first()
-
-    total_issues = iss_stats.total if iss_stats else 0
-    issues_with_resp = iss_stats.with_resp if iss_stats else 0
-    resolved_count = iss_stats.resolved_cnt if iss_stats else 0
+    row = db.query(
+        scalar(func.count(func.distinct(Feedback.tracking_code))),
+        scalar(func.count(Feedback.id)),
+        scalar(func.count(Issue.id)),
+        scalar(func.count(Issue.id), Issue.public_response.isnot(None), Issue.public_response != ""),
+        scalar(func.count(Issue.id), Issue.status == IssueStatus.resolved),
+        scalar(func.count(Verification.id)),
+        scalar(func.count(Verification.id), Verification.fixed == True),  # noqa: E712
+        scalar(
+            func.avg(func.extract("epoch", Issue.resolved_at - Issue.created_at)),
+            Issue.resolved_at.isnot(None),
+        ),
+    ).one()
+    (
+        people_heard,
+        total_feedback,
+        total_issues,
+        issues_with_resp,
+        resolved_count,
+        total_verif,
+        fixed_verif,
+        avg_resolve_seconds,
+    ) = row
 
     response_rate = round((issues_with_resp / total_issues), 4) if total_issues > 0 else 0.0
     resolved_share = round(resolved_count / total_issues, 4) if total_issues > 0 else 0.0
-
-    # Combine verification stats into 1 query
-    verif_stats = db.query(
-        func.count(Verification.id).label("total"),
-        func.count(Verification.id).filter(Verification.fixed == True).label("fixed_cnt"),  # noqa: E712
-    ).first()
-
-    total_verif = verif_stats.total if verif_stats else 0
-    fixed_verif = verif_stats.fixed_cnt if verif_stats else 0
     verified_fix_rate = round(fixed_verif / total_verif, 4) if total_verif > 0 else 0.0
-
-    resolved_issues = db.query(Issue.created_at, Issue.resolved_at).filter(Issue.resolved_at.isnot(None)).all()
-    if resolved_issues:
-        total_days = sum(
-            (r_at - c_at).total_seconds() / 86400.0
-            for c_at, r_at in resolved_issues
-            if c_at and r_at
-        )
-        avg_days_to_resolve = round(total_days / len(resolved_issues), 2)
-    else:
-        avg_days_to_resolve = 0.0
+    avg_days_to_resolve = round(float(avg_resolve_seconds) / 86400.0, 2) if avg_resolve_seconds is not None else 0.0
 
     return {
         "people_heard": people_heard,
