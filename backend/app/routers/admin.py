@@ -19,6 +19,7 @@ from app.models import (
     UserRole,
 )
 from app.routers.stream import broadcast_event
+from app.services.lifecycle import link_negative_aspects, rescore_issues, unlink_feedback
 
 router = APIRouter(tags=["admin"])
 
@@ -187,6 +188,13 @@ def moderate_feedback(
             f"Invalid moderation action '{payload.action}'",
             status_code=400,
         )
+
+    # Only approved feedback counts toward issues: approving links its complaints into issues,
+    # rejecting takes it back out of any issue it was part of
+    if fb.status == FeedbackStatus.approved:
+        rescore_issues(db, link_negative_aspects(db, fb.aspects, fb.location_id))
+    elif fb.status == FeedbackStatus.rejected:
+        rescore_issues(db, unlink_feedback(db, fb))
 
     db.commit()
     db.refresh(fb)

@@ -23,8 +23,12 @@ from app.models import (
 )
 from app.routers.stream import broadcast_event
 from app.services.analysis import run_analysis_pipeline
-from app.services.cluster import cluster_aspect, compute_updated_centroid
-from app.services.priority import calculate_priority_score
+from app.services.lifecycle import (
+    current_round_votes,
+    link_negative_aspects,
+    reported_before_fix,
+    rescore_issues,
+)
 
 router = APIRouter(tags=["public"])
 
@@ -105,19 +109,17 @@ def build_track_response(db: Session, fb: Feedback) -> Dict[str, Any]:
     if issue_ids:
         db_issues = db.query(Issue).filter(Issue.id.in_(issue_ids)).all()
         for issue in db_issues:
-            user_verification = (
-                db.query(Verification)
-                .filter(
-                    Verification.issue_id == issue.id,
-                    Verification.tracking_code == fb.tracking_code,
-                )
-                .first()
+            # Votes on the latest resolution only: after a re-fix, earlier reporters can check again
+            user_verification = next(
+                (v for v in current_round_votes(db, issue) if v.tracking_code == fb.tracking_code), None
             )
             my_vote = user_verification.fixed if user_verification else None
             issue_status_str = (
                 issue.status.value if hasattr(issue.status, "value") else str(issue.status)
             )
-            can_verify = (issue_status_str == "resolved") and (user_verification is None)
+            can_verify = (
+                issue_status_str == "resolved" and user_verification is None and reported_before_fix(fb, issue)
+            )
 
             events = (
                 db.query(IssueEvent)
@@ -297,12 +299,10 @@ def _store_feedback(db: Session, payload: FeedbackCreateRequest, loc: Location, 
     db.add(feedback)
     db.flush()
 
-    touched_issue_ids = set()
-    aspects_out = []
-
-    # 5. Process aspects & clustering for negative aspects
-    for aspect_item in analysis_result.aspects:
-        db_aspect = Aspect(
+    # 5. Save aspects. Only approved feedback joins issues: flagged feedback waits unlinked in the
+    # moderation queue and is linked if an admin approves it (see app.services.lifecycle)
+    db_aspects = [
+        Aspect(
             feedback_id=feedback.id,
             aspect=aspect_item.aspect,
             category=aspect_item.category,
@@ -310,111 +310,26 @@ def _store_feedback(db: Session, payload: FeedbackCreateRequest, loc: Location, 
             urgency=aspect_item.urgency,
             evidence_span=aspect_item.evidence_span,
         )
+        for aspect_item in analysis_result.aspects
+    ]
+    db.add_all(db_aspects)
+    db.flush()
 
-        if aspect_item.sentiment == "negative":
-            open_db_issues = (
-                db.query(Issue)
-                .filter(
-                    Issue.location_id == loc.id,
-                    Issue.category == aspect_item.category,
-                    Issue.status != IssueStatus.resolved,
-                )
-                .all()
-            )
+    if feedback_status == FeedbackStatus.approved:
+        # 6. Cluster negative aspects into issues and recalculate their priority scores
+        rescore_issues(db, link_negative_aspects(db, db_aspects, loc.id))
 
-            open_issues_dicts = [
-                {
-                    "id": iss.id,
-                    "category": iss.category,
-                    "location_id": iss.location_id,
-                    "centroid": iss.centroid,
-                    "title": iss.title,
-                    "status": iss.status.value if hasattr(iss.status, "value") else str(iss.status),
-                }
-                for iss in open_db_issues
-            ]
-
-            match_res = cluster_aspect(
-                aspect_text=aspect_item.evidence_span or aspect_item.aspect,
-                aspect_category=aspect_item.category,
-                aspect_location_id=loc.id,
-                open_issues=open_issues_dicts,
-            )
-
-            if match_res.should_join and match_res.matched_issue_id:
-                matched_issue = db.query(Issue).filter(Issue.id == match_res.matched_issue_id).first()
-                if matched_issue:
-                    db_aspect.issue_id = matched_issue.id
-                    existing_aspect_count = (
-                        db.query(func.count(Aspect.id))
-                        .filter(Aspect.issue_id == matched_issue.id)
-                        .scalar()
-                        or 0
-                    )
-                    updated_centroid = compute_updated_centroid(
-                        current_centroid=matched_issue.centroid or [],
-                        current_count=existing_aspect_count,
-                        new_embedding=match_res.embedding,
-                    )
-                    matched_issue.centroid = updated_centroid
-                    touched_issue_ids.add(matched_issue.id)
-            else:
-                new_title = f"{aspect_item.category.capitalize()}: {aspect_item.evidence_span[:50]}"
-                new_issue = Issue(
-                    title=new_title,
-                    category=aspect_item.category,
-                    location_id=loc.id,
-                    status=IssueStatus.open,
-                    centroid=match_res.embedding,
-                    priority_score=0.0,
-                )
-                db.add(new_issue)
-                db.flush()
-                db_aspect.issue_id = new_issue.id
-                touched_issue_ids.add(new_issue.id)
-
-        db.add(db_aspect)
-        db.flush()
-
-        aspects_out.append(
-            {
-                "id": db_aspect.id,
-                "aspect": db_aspect.aspect,
-                "category": db_aspect.category,
-                "sentiment": db_aspect.sentiment,
-                "urgency": db_aspect.urgency,
-                "evidence_span": db_aspect.evidence_span,
-            }
-        )
-
-    # 6. Recalculate priority scores for touched issues
-    for iss_id in touched_issue_ids:
-        target_issue = db.query(Issue).filter(Issue.id == iss_id).first()
-        if not target_issue:
-            continue
-
-        linked_aspects = db.query(Aspect).filter(Aspect.issue_id == target_issue.id).all()
-        reports_data = []
-        highest_urgency = "normal"
-        urgency_levels = {"critical": 3, "high": 2, "normal": 1}
-        max_urg_val = 1
-
-        for a in linked_aspects:
-            urg_val = urgency_levels.get(a.urgency.lower(), 1)
-            if urg_val > max_urg_val:
-                max_urg_val = urg_val
-                highest_urgency = a.urgency.lower()
-
-            fb_obj = a.feedback
-            reports_data.append(
-                {
-                    "created_at": fb_obj.created_at if fb_obj else target_issue.created_at,
-                    "sentiment": a.sentiment,
-                }
-            )
-
-        pri_result = calculate_priority_score(reports_data, highest_urgency=highest_urgency)
-        target_issue.priority_score = pri_result.priority_score
+    aspects_out = [
+        {
+            "id": a.id,
+            "aspect": a.aspect,
+            "category": a.category,
+            "sentiment": a.sentiment,
+            "urgency": a.urgency,
+            "evidence_span": a.evidence_span,
+        }
+        for a in db_aspects
+    ]
 
     db.commit()
     db.refresh(feedback)
@@ -537,37 +452,38 @@ def verify_issue_resolution(
     if not issue:
         raise AppError("NOT_FOUND", f"Issue with id '{payload.issue_id}' not found", status_code=404)
 
-    existing_vote = (
-        db.query(Verification)
-        .filter(Verification.issue_id == issue.id, Verification.tracking_code == code)
-        .first()
-    )
-    if existing_vote:
+    # Only people whose report is part of this issue can vote, only once the fix has been announced,
+    # and only if they reported before it (new codes minted afterwards can't swing the vote)
+    if not any(a.issue_id == issue.id for a in fb.aspects):
+        raise AppError("NOT_LINKED", "This report isn't part of that issue", status_code=403)
+    if issue.status != IssueStatus.resolved:
+        raise AppError("NOT_RESOLVED", "This issue hasn't been marked fixed yet, so there's nothing to verify", status_code=409)
+    if not reported_before_fix(fb, issue):
+        raise AppError("REPORTED_AFTER_FIX", "Only reports made before the fix can verify it", status_code=403)
+
+    # Votes are keyed by the stored code, so "ECH-XXXX" and "XXXX" can't vote twice
+    votes = current_round_votes(db, issue)
+    if any(v.tracking_code == fb.tracking_code for v in votes):
         raise AppError("ALREADY_VOTED", "You have already verified this issue", status_code=409)
 
     verification = Verification(
         issue_id=issue.id,
-        tracking_code=code,
+        tracking_code=fb.tracking_code,
         fixed=payload.fixed,
     )
     db.add(verification)
-    db.flush()
+    votes.append(verification)
 
-    all_verifications = (
-        db.query(Verification).filter(Verification.issue_id == issue.id).all()
-    )
-    total_votes = len(all_verifications)
-    not_fixed_count = sum(1 for v in all_verifications if not v.fixed)
+    total_votes = len(votes)
+    not_fixed_count = sum(1 for v in votes if not v.fixed)
 
+    # The issue is resolved here (checked above), so this reopens it once; later votes are rejected
     if total_votes >= 3 and (not_fixed_count / total_votes) >= 0.30:
-        from_status_str = (
-            issue.status.value if hasattr(issue.status, "value") else str(issue.status)
-        )
         issue.status = IssueStatus.reopened
         issue.reopened_count = (issue.reopened_count or 0) + 1
         event = IssueEvent(
             issue_id=issue.id,
-            from_status=from_status_str,
+            from_status=IssueStatus.resolved.value,
             to_status="reopened",
             note="Reopened automatically based on community verifications",
         )
