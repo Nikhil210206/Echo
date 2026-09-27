@@ -104,8 +104,9 @@ export function DitherField({
       const r = wrap.getBoundingClientRect();
       w = r.width;
       h = r.height;
-      cols = Math.ceil(w / cell);
-      rows = Math.ceil(h / cell);
+      // At least 1×1: a hidden or not-yet-laid-out box measures 0, and a 0-size ImageData throws
+      cols = Math.max(1, Math.ceil(w / cell));
+      rows = Math.max(1, Math.ceil(h / cell));
       canvas.width = cols * sub;
       canvas.height = rows * sub;
       canvas.style.width = `${cols * cell}px`;
