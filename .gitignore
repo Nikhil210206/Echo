@@ -15,6 +15,5 @@ dist/
 .vscode/
 .idea/
 
-# Local tooling
-.claude/
-CLAUDE.md
+# TypeScript build cache
+*.tsbuildinfo

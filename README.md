@@ -32,4 +32,14 @@ cp .env.example .env
 uvicorn app.main:app --reload
 ```
 
-Frontend setup is added once the Vite app is scaffolded.
+```bash
+cd frontend && npm install
+cp .env.example .env
+npm run dev          # http://localhost:5180
+```
+
+With `VITE_USE_MOCKS=true` (the default) the frontend runs on an in-memory mock of the API, so every screen works before the backend is up. Set `VITE_USE_MOCKS=false` and `VITE_API_URL` to use the real backend.
+
+**Staff console** is at `/admin`. In mock mode the login page offers demo accounts (admin, IT services, Mess manager).
+
+Before the demo, set `VITE_PUBLIC_URL` to the deployed address so the printed QR codes point somewhere phones can reach.
