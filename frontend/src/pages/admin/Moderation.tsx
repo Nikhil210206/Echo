@@ -47,11 +47,13 @@ export default function Moderation() {
     if (e.type === "moderation") load();
   });
 
-  const done = (id: number) => {
-    setQueue((q) => q?.filter((x) => x.id !== id) ?? null);
+  // Counted as soon as the server confirms: the live "moderation" event can reload the queue and
+  // unmount the card before its exit animation finishes
+  const handledOne = () => {
     setHandled((h) => h + 1);
     refreshPending();
   };
+  const remove = (id: number) => setQueue((q) => q?.filter((x) => x.id !== id) ?? null);
 
   return (
     <div>
@@ -83,7 +85,7 @@ export default function Moderation() {
       ) : (
         <ul className="grid gap-3 lg:grid-cols-2">
           {queue.map((f) => (
-            <QueueCard key={f.id} item={f} onDone={() => done(f.id)} />
+            <QueueCard key={f.id} item={f} onHandled={handledOne} onDone={() => remove(f.id)} />
           ))}
         </ul>
       )}
@@ -91,7 +93,7 @@ export default function Moderation() {
   );
 }
 
-function QueueCard({ item, onDone }: { item: FeedbackRecord; onDone: () => void }) {
+function QueueCard({ item, onHandled, onDone }: { item: FeedbackRecord; onHandled: () => void; onDone: () => void }) {
   const ref = useRef<HTMLLIElement>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -104,6 +106,7 @@ function QueueCard({ item, onDone }: { item: FeedbackRecord; onDone: () => void 
     setError(null);
     try {
       await api.moderate(item.id, action, action === "redact" ? draft : undefined);
+      onHandled();
       const el = ref.current;
       if (el && !prefersReducedMotion()) {
         await gsap.to(el, { x: action === "reject" ? -60 : 60, opacity: 0, duration: 0.45, ease: "power2.in" });

@@ -342,7 +342,7 @@ def update_issue(
             if not final_response or not final_response.strip():
                 raise AppError(
                     "VALIDATION_ERROR",
-                    "public_response required to resolve",
+                    "Write a public response before resolving. Reporters and the public page will see it.",
                     status_code=400,
                     fields={"public_response": "required"},
                 )

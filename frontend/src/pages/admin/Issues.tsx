@@ -126,9 +126,11 @@ export default function Issues() {
           </div>
         ) : shown.length === 0 ? (
           <div className="p-6">
-            <Empty title={isAdmin ? "No issues here" : "Nothing assigned"}>
-              {isAdmin ? "Try another status or topic." : "When an admin assigns you an issue it shows up here."}
-            </Empty>
+            {isAdmin || (counts.all ?? 0) > 0 ? (
+              <Empty title={isAdmin ? "No issues here" : "None of your issues match"}>Try another status or topic.</Empty>
+            ) : (
+              <Empty title="Nothing assigned">When an admin assigns you an issue it shows up here.</Empty>
+            )}
           </div>
         ) : (
           <ul className="divide-y divide-bone/[0.06]">

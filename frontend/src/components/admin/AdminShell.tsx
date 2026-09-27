@@ -92,8 +92,13 @@ export function AdminShell() {
       </nav>
       <div className="mt-auto space-y-3 pt-8">
         <div className="flex items-center gap-2 px-4 text-xs text-bone/50">
-          <span className={cn("h-2 w-2 rounded-full", live ? "bg-mint shadow-[0_0_10px_2px_rgba(143,240,174,.5)]" : "bg-bone/30")} />
-          {live ? "Live" : "Reconnecting…"}
+          {/* Live updates are admin-only (see useLive) */}
+          {isAdmin && (
+            <>
+              <span className={cn("h-2 w-2 rounded-full", live ? "bg-mint shadow-[0_0_10px_2px_rgba(143,240,174,.5)]" : "bg-bone/30")} />
+              {live ? "Live" : "Reconnecting…"}
+            </>
+          )}
           {USE_MOCKS && <span className="ml-auto font-mono text-[0.65rem] text-bone/30">mock data</span>}
         </div>
         <div className="flex items-center gap-3 rounded-[1.25rem] bg-bone/[0.05] p-3">
