@@ -1,0 +1,25 @@
+# Render Blueprint for the Echo API (FastAPI). The frontend is deployed separately on Vercel.
+# Ohio is the same AWS region as the Neon database (us-east-2), so database round trips are ~1 ms.
+services:
+  - type: web
+    name: echo-api
+    runtime: python
+    region: ohio
+    plan: starter # the free plan sleeps after 15 min idle and takes ~1 min to wake
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATABASE_URL
+        sync: false # paste the Neon connection string in the dashboard
+      - key: GROQ_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRE_MINUTES
+        value: "1440"
+      - key: CORS_ORIGINS
+        sync: false # the Vercel URL, e.g. https://echo.vercel.app (comma-separate several)
