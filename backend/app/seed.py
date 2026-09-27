@@ -21,6 +21,7 @@ from app.models import (
     UserRole,
     Verification,
 )
+from app.services.lifecycle import rescore_issues
 from app.services.priority import calculate_priority_score
 
 DEMO_PASSWORD = "demo1234"
@@ -46,6 +47,54 @@ def reset_database(db: Session):
     db.query(User).delete()
     db.commit()
     print("Database reset complete.")
+
+
+DEMO_TRACKING_CODE = "DEMO"  # the Track page shows it as ECH-DEMO
+DEMO_ISSUE_TITLE = "Mess Entrance Water Cooler Leakage"
+
+
+def ensure_demo_report(db: Session):
+    """Adds a report with a fixed tracking code to a resolved issue, so the Track page's "Try ECH-DEMO"
+    link always opens the did-it-get-fixed screen. Safe to run repeatedly."""
+    if db.query(Feedback).filter(Feedback.tracking_code == DEMO_TRACKING_CODE).first():
+        print("Demo report ECH-DEMO already exists.")
+        return
+
+    resolved = db.query(Issue).filter(Issue.status == IssueStatus.resolved, Issue.resolved_at.isnot(None))
+    issue = resolved.filter(Issue.title == DEMO_ISSUE_TITLE).first() or resolved.order_by(Issue.resolved_at).first()
+    if not issue:
+        print("No resolved issue to attach the demo report to; skipped ECH-DEMO.")
+        return
+
+    # Filed before the fix, so it's allowed to verify it
+    created_at = max(issue.created_at, issue.resolved_at - timedelta(days=1)) if issue.created_at else issue.resolved_at - timedelta(days=1)
+    text = f"{issue.title} — please look into it."
+    fb = Feedback(
+        kind=FeedbackKind.text,
+        text_redacted=text,
+        location_id=issue.location_id,
+        tracking_code=DEMO_TRACKING_CODE,
+        status=FeedbackStatus.approved,
+        overall_sentiment="negative",
+        analyzed_by="llm",
+        created_at=created_at,
+    )
+    db.add(fb)
+    db.flush()
+    db.add(
+        Aspect(
+            feedback_id=fb.id,
+            aspect=issue.category,
+            category=issue.category,
+            sentiment="negative",
+            urgency="normal",
+            evidence_span=issue.title,
+            issue_id=issue.id,
+        )
+    )
+    rescore_issues(db, {issue.id})
+    db.commit()
+    print(f"Demo report ECH-DEMO added to resolved issue: {issue.title}")
 
 
 def seed_data(reset: bool = False):
@@ -466,6 +515,8 @@ def seed_data(reset: bool = False):
         db.commit()
         db.refresh(reopened_issue)
 
+        ensure_demo_report(db)
+
         print("\n" + "=" * 65)
         print("                ECHO SYSTEM SEEDING COMPLETE                ")
         print("=" * 65)
@@ -481,7 +532,7 @@ def seed_data(reset: bool = False):
         print(f"    - Title:              {wifi_issue.title}")
         print(f"    - Priority Score:     {wifi_issue.priority_score}")
         print(f"  * Resolved Issue ID:    {resolved_issue.id}")
-        print(f"    - Tracking Code:      {resolved_code1}")
+        print(f"    - Tracking Code:      {resolved_code1} (also ECH-DEMO)")
         print(f"  * Reopened Issue ID:    {reopened_issue.id}")
         print(f"    - Tracking Code:      {reopened_code1}")
         print("=" * 65 + "\n")
@@ -493,6 +544,14 @@ def seed_data(reset: bool = False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Seed database for Echo platform.")
     parser.add_argument("--reset", action="store_true", help="Delete all existing rows before seeding")
+    parser.add_argument("--demo-report", action="store_true", help="Only add the ECH-DEMO report to an existing database")
     args = parser.parse_args()
 
-    seed_data(reset=args.reset)
+    if args.demo_report:
+        session = SessionLocal()
+        try:
+            ensure_demo_report(session)
+        finally:
+            session.close()
+    else:
+        seed_data(reset=args.reset)

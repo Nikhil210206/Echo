@@ -16,6 +16,7 @@ from app.routers.stream import router as stream_router
 
 import asyncio
 from app.db import SessionLocal
+from app.services.lifecycle import rescore_all_issues
 from sqlalchemy import text
 
 # Load environment variables
@@ -55,10 +56,31 @@ async def warm_db_pool():
         pass
 
 
+def _refresh_priorities():
+    db = SessionLocal()
+    try:
+        rescore_all_issues(db)
+        db.commit()
+    finally:
+        db.close()
+
+
+async def priority_refresh_task():
+    """Reports count half once they're over a week old, so stored priority scores are refreshed
+    periodically (at startup, then every 10 minutes) to keep sorting and ranks current."""
+    while True:
+        try:
+            await asyncio.to_thread(_refresh_priorities)
+        except Exception:
+            pass
+        await asyncio.sleep(600)
+
+
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(warm_db_pool())
     asyncio.create_task(db_keep_alive_task())
+    asyncio.create_task(priority_refresh_task())
 
 
 # Register structured exception handlers

@@ -274,6 +274,8 @@ function openLive(tok: string) {
     } catch {
       return; /* ignore malformed frames */
     }
+    // Something changed on the server: drop cached responses so the refetches this triggers get fresh data
+    clearApiCache();
     conn.subs.forEach((s) => s.onEvent(e));
   };
   return conn;

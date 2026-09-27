@@ -3,11 +3,11 @@
 Only approved feedback counts toward issues. Flagged feedback waits in moderation unlinked, gets
 linked when an admin approves it, and is unlinked again if an admin rejects it.
 """
-from datetime import datetime, timezone
-from typing import Iterable, List, Optional, Set
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer, joinedload
 
 from app.models import Aspect, Feedback, Issue, IssueStatus, Verification
 from app.services.cluster import cluster_aspect, compute_updated_centroid
@@ -95,41 +95,69 @@ def unlink_feedback(db: Session, feedback: Feedback) -> Set[str]:
     return touched_issue_ids
 
 
+def score_issue(aspects: List[Aspect], reference_time: Optional[datetime] = None) -> Dict[str, Any]:
+    """Priority = Rw × N × U over the issue's reports (one per feedback; negative if it complains).
+    The single formula behind both the stored priority_score and the breakdown on the issue page.
+    Expects each aspect's feedback to be loaded."""
+    reference_time = reference_time or datetime.now(timezone.utc)
+    urgency_levels = {"normal": 1, "high": 2, "critical": 3}
+
+    reports: Dict[str, Dict[str, Any]] = {}
+    highest_urgency = "normal"
+    for a in aspects:
+        report = reports.setdefault(
+            a.feedback_id, {"created_at": a.feedback.created_at if a.feedback else None, "sentiment": "neutral"}
+        )
+        if a.sentiment == "negative":
+            report["sentiment"] = "negative"
+        urgency = (a.urgency or "normal").lower()
+        if urgency_levels.get(urgency, 1) > urgency_levels[highest_urgency]:
+            highest_urgency = urgency
+
+    if not reports:
+        # calculate_priority_score treats an empty list as one report; an issue with none scores 0
+        return {"recent_reports": 0, "older_reports": 0, "recency_weighted": 0.0, "negative_share": 0.0,
+                "urgency_multiplier": 1, "score": 0.0}
+
+    result = calculate_priority_score(list(reports.values()), highest_urgency=highest_urgency, reference_time=reference_time)
+    seven_days_ago = reference_time - timedelta(days=7)
+    recent_reports = sum(1 for r in reports.values() if r["created_at"] and _as_utc(r["created_at"]) >= seven_days_ago)
+
+    return {
+        "recent_reports": recent_reports,
+        "older_reports": len(reports) - recent_reports,
+        "recency_weighted": result.breakdown.recency_weighted_reports,
+        "negative_share": result.breakdown.negative_share,
+        "urgency_multiplier": int(result.breakdown.urgency_multiplier),
+        "score": result.priority_score,
+    }
+
+
 def rescore_issues(db: Session, issue_ids: Iterable[str]) -> None:
-    """Recomputes priority_score from each issue's currently linked aspects."""
-    urgency_levels = {"critical": 3, "high": 2, "normal": 1}
+    """Recomputes priority_score from each issue's currently linked reports, in two queries."""
+    issue_ids = set(issue_ids)
+    if not issue_ids:
+        return
+    db.flush()  # sessions don't autoflush; make pending link changes visible to the queries below
 
-    for iss_id in issue_ids:
-        target_issue = db.query(Issue).filter(Issue.id == iss_id).first()
-        if not target_issue:
-            continue
+    aspects_by_issue: Dict[str, List[Aspect]] = {iss_id: [] for iss_id in issue_ids}
+    linked = (
+        db.query(Aspect)
+        .options(defer(Aspect.embedding), joinedload(Aspect.feedback))
+        .filter(Aspect.issue_id.in_(issue_ids))
+        .all()
+    )
+    for a in linked:
+        aspects_by_issue[a.issue_id].append(a)
 
-        linked_aspects = db.query(Aspect).filter(Aspect.issue_id == target_issue.id).all()
-        if not linked_aspects:
-            # Every report was rejected; calculate_priority_score would treat an empty list as one report
-            target_issue.priority_score = 0.0
-            continue
+    for issue in db.query(Issue).filter(Issue.id.in_(issue_ids)).all():
+        issue.priority_score = score_issue(aspects_by_issue[issue.id])["score"]
 
-        reports_data = []
-        highest_urgency = "normal"
-        max_urg_val = 1
 
-        for a in linked_aspects:
-            urg_val = urgency_levels.get(a.urgency.lower(), 1)
-            if urg_val > max_urg_val:
-                max_urg_val = urg_val
-                highest_urgency = a.urgency.lower()
-
-            fb_obj = a.feedback
-            reports_data.append(
-                {
-                    "created_at": fb_obj.created_at if fb_obj else target_issue.created_at,
-                    "sentiment": a.sentiment,
-                }
-            )
-
-        pri_result = calculate_priority_score(reports_data, highest_urgency=highest_urgency)
-        target_issue.priority_score = pri_result.priority_score
+def rescore_all_issues(db: Session) -> None:
+    """Refreshes every issue's stored score. Recency weighting changes as reports age past a week,
+    so stored scores (used for sorting and ranking) drift unless refreshed periodically."""
+    rescore_issues(db, [iss_id for (iss_id,) in db.query(Issue.id).all()])
 
 
 def current_round_votes(db: Session, issue: Issue) -> List[Verification]:

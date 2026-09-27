@@ -184,7 +184,7 @@ function WhyRanked({ issue }: { issue: Detail }) {
       <div className="grid items-stretch gap-2 sm:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr]">
         <Factor label="Recency-weighted reports" value={b.recency_weighted} decimals={1} note={`${b.recent_reports} this week + ${b.older_reports} older × ½`} />
         <Op>×</Op>
-        <Factor label="Share negative" value={b.negative_share * 100} decimals={0} suffix="%" note="of mentions tied to this issue" />
+        <Factor label="Share negative" value={b.negative_share * 100} decimals={0} suffix="%" note="of reports tied to this issue" />
         <Op>×</Op>
         <Factor label="Urgency" value={b.urgency_multiplier} decimals={0} prefix="×" note={urgencyWord} />
         <Op>=</Op>
@@ -414,7 +414,11 @@ function Actions({ issue, onSaved }: { issue: Detail; onSaved: (d: Detail) => vo
             aria-label="Assign to team"
             value={issue.assignee?.id ?? ""}
             disabled={busy !== null}
-            onChange={(e) => run("assign", { assignee_id: e.target.value ? Number(e.target.value) : null })}
+            onChange={(e) => {
+              // Send the id as the API gave it: a UUID string from the backend, a number in mock mode
+              const picked = staff.find((s) => String(s.id) === e.target.value);
+              run("assign", { assignee_id: picked ? picked.id : null });
+            }}
             className="h-12 w-full rounded-2xl bg-ink px-4 outline-none ring-1 ring-bone/10 focus:ring-2 focus:ring-lilac"
           >
             <option value="">Unassigned</option>

@@ -272,3 +272,100 @@ def test_resolving_again_starts_a_new_vote(env):
     tracked = client.get("/api/track/AAAA1111").json()["issues"][0]
     assert tracked["can_verify"] is True and tracked["my_vote"] is None
     assert vote(client, "AAAA1111", issue, True).status_code == 200
+
+
+# --- Priority consistency ---
+
+
+def test_issue_page_score_matches_breakdown_and_me_too_rescores(env):
+    client, db, loc = env
+    issue_id = feedback_by_code(db, submit(client, flagged=False)).aspects[0].issue_id
+
+    with patch("app.routers.issues.run_parallel", side_effect=lambda *tasks: [t(db) for t in tasks]):
+        detail = client.get(f"/api/issues/{issue_id}").json()
+    assert detail["priority_score"] == detail["breakdown"]["score"] == 2.0  # 1 recent report × 100% × high
+
+    assert client.post(f"/api/issues/{issue_id}/metoo", json={"device_id": "phone-1"}).status_code == 200
+    db.expire_all()
+    stored = db.get(Issue, issue_id).priority_score
+    with patch("app.routers.issues.run_parallel", side_effect=lambda *tasks: [t(db) for t in tasks]):
+        detail = client.get(f"/api/issues/{issue_id}").json()
+    assert stored == detail["priority_score"] == detail["breakdown"]["score"] == 4.0  # 2 reports × 100% × high
+
+
+def test_rescore_all_decays_old_reports(env):
+    from app.services.lifecycle import rescore_all_issues
+
+    client, db, loc = env
+    issue = make_resolved_issue(db, loc)
+    issue.priority_score = 99.0
+    add_report(db, loc, issue, "AAAA1111", created_at=NOW - timedelta(days=10))
+    rescore_all_issues(db)
+    db.commit()
+    assert db.get(Issue, issue.id).priority_score == 0.5  # one report older than a week counts half
+
+
+# --- Bad input returns 4xx, not 500 ---
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/issues?status=bogus",
+        "/api/users?role=bogus",
+        "/api/feedback?status=bogus",
+        "/api/feedback?days=99999999",
+        "/api/analytics/summary?days=99999999",
+    ],
+)
+def test_bad_filters_are_rejected_cleanly(env, path):
+    client, _, _ = env
+    r = client.get(path)
+    assert 400 <= r.status_code < 500, (path, r.status_code, r.text)
+
+
+def test_assigning_unknown_user_is_rejected_and_null_unassigns(env):
+    client, db, loc = env
+    issue = make_resolved_issue(db, loc)
+    staff = User(name="Staff", email="s@x.test", password_hash="x", role=UserRole.staff)
+    db.add(staff)
+    issue.assignee_id = None
+    db.commit()
+    no_parallel = patch("app.routers.issues.run_parallel", side_effect=lambda *tasks: [t(db) for t in tasks])
+
+    r = client.patch(f"/api/issues/{issue.id}", json={"assignee_id": "no-such-user"})
+    assert r.status_code == 400 and r.json()["error"]["fields"] == {"assignee_id": "not_found"}
+
+    with no_parallel:
+        assert client.patch(f"/api/issues/{issue.id}", json={"assignee_id": staff.id}).status_code == 200
+    db.expire_all()
+    assert db.get(Issue, issue.id).assignee_id == staff.id
+
+    with no_parallel:
+        assert client.patch(f"/api/issues/{issue.id}", json={"assignee_id": None}).status_code == 200
+    db.expire_all()
+    assert db.get(Issue, issue.id).assignee_id is None
+
+
+def test_setting_the_same_status_logs_nothing(env):
+    from app.models import IssueEvent
+
+    client, db, loc = env
+    issue = make_resolved_issue(db, loc)
+    resolved_at = db.get(Issue, issue.id).resolved_at
+    with patch("app.routers.issues.run_parallel", side_effect=lambda *tasks: [t(db) for t in tasks]):
+        assert client.patch(f"/api/issues/{issue.id}", json={"status": "resolved"}).status_code == 200
+    db.expire_all()
+    assert db.query(IssueEvent).count() == 0
+    assert db.get(Issue, issue.id).resolved_at == resolved_at  # the verification round isn't reset
+
+
+def test_unexpected_errors_return_json_with_cors(env):
+    client, db, loc = env
+    issue = make_resolved_issue(db, loc)
+    add_report(db, loc, issue, "AAAA1111")
+    with patch("app.routers.public.build_track_response", side_effect=RuntimeError("boom")):
+        r = client.get("/api/track/AAAA1111", headers={"Origin": "http://localhost:5180"})
+    assert r.status_code == 500
+    assert r.json()["error"]["code"] == "INTERNAL_ERROR"
+    assert r.headers.get("access-control-allow-origin") == "http://localhost:5180"

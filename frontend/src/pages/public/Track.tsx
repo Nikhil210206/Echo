@@ -99,13 +99,9 @@ function Lookup() {
           </ul>
         ) : (
           <p className="rounded-[1.5rem] bg-white px-5 py-6 text-ink/55">
-            Nothing yet. Reports you send from this phone show up here automatically.
-            {USE_MOCKS && (
-              <>
-                {" "}
-                Try <Link className="font-mono text-cobalt underline" to="/track/ECH-DEMO">ECH-DEMO</Link>.
-              </>
-            )}
+            Nothing yet. Reports you send from this phone show up here automatically.{" "}
+            {/* ECH-DEMO exists in the mocks, and the backend seed adds it (python -m app.seed --demo-report) */}
+            Try <Link className="font-mono text-cobalt underline" to="/track/ECH-DEMO">ECH-DEMO</Link>.
           </p>
         )}
       </section>

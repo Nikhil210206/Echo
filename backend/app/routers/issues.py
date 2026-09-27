@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends
@@ -21,8 +21,11 @@ from app.models import (
     Verification,
 )
 from app.routers.stream import broadcast_event
+from app.services.lifecycle import score_issue
 
 router = APIRouter(tags=["issues"])
+
+ISSUE_STATUSES = {st.value for st in IssueStatus}
 
 
 # --- Pydantic Schemas ---
@@ -35,43 +38,6 @@ class IssueUpdateRequest(BaseModel):
 
 
 # --- Helper Functions ---
-def _as_utc(dt: datetime) -> datetime:
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
-
-
-def compute_issue_metrics(aspects: List[Aspect]) -> Dict[str, Any]:
-    """recency_weighted * negative_share * urgency_multiplier, from an issue's already-loaded aspects
-    (and their feedback), so no extra queries are needed."""
-    seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
-
-    linked_feedback = {a.feedback.id: a.feedback for a in aspects if a.feedback is not None}.values()
-    recent_reports = sum(1 for fb in linked_feedback if fb.created_at and _as_utc(fb.created_at) >= seven_days_ago)
-    older_reports = len(linked_feedback) - recent_reports
-    recency_weighted = recent_reports + (older_reports * 0.5)
-
-    total_aspects = len(aspects)
-    negative_share = (
-        round(sum(1 for a in aspects if a.sentiment == "negative") / total_aspects, 4)
-        if total_aspects > 0
-        else 0.0
-    )
-
-    urgency_multiplier = 1
-    if any(a.urgency == "critical" for a in aspects):
-        urgency_multiplier = 3
-    elif any(a.urgency == "high" for a in aspects):
-        urgency_multiplier = 2
-
-    return {
-        "recent_reports": recent_reports,
-        "older_reports": older_reports,
-        "recency_weighted": recency_weighted,
-        "negative_share": negative_share,
-        "urgency_multiplier": urgency_multiplier,
-        "score": round(recency_weighted * negative_share * urgency_multiplier, 4),
-    }
-
-
 def build_issue_summary_response(db: Session, issue: Issue) -> Dict[str, Any]:
     """Builds complete dictionary for IssueSummary shape. Expects issue.location, issue.assignee and
     issue.aspects to be eager-loaded by the caller."""
@@ -96,11 +62,7 @@ def build_issue_summary_response(db: Session, issue: Issue) -> Dict[str, Any]:
     if issue.assignee:
         assignee_data = {"id": issue.assignee.id, "name": issue.assignee.name}
 
-    score = (
-        float(issue.priority_score)
-        if issue.priority_score is not None
-        else compute_issue_metrics(aspects)["score"]
-    )
+    score = float(issue.priority_score) if issue.priority_score is not None else score_issue(aspects)["score"]
 
     report_count = len(set(a.feedback_id for a in aspects if a.feedback_id))
 
@@ -154,10 +116,14 @@ def _load_issue_core(db: Session, issue_id: str) -> Optional[Dict[str, Any]]:
             }
         )
 
+    metrics = score_issue(issue.aspects)
+    # The page shows the live score, so the headline number always matches its breakdown
+    # (the stored one used for sorting is refreshed on every change and periodically)
+    summary = {**build_issue_summary_response(db, issue), "priority_score": metrics["score"]}
     return {
         "assignee_id": issue.assignee_id,
-        "summary": build_issue_summary_response(db, issue),
-        "metrics": compute_issue_metrics(issue.aspects),
+        "summary": summary,
+        "metrics": metrics,
         "evidence": evidence_list,
     }
 
@@ -289,6 +255,8 @@ def list_issues(
         query = query.filter(Issue.category == category)
 
     if status:
+        if status != "active" and status not in ISSUE_STATUSES:
+            raise AppError("VALIDATION_ERROR", f"Unknown status '{status}'", status_code=400, fields={"status": "invalid"})
         if status == "active":
             query = query.filter(Issue.status != IssueStatus.resolved)
         else:
@@ -345,16 +313,23 @@ def update_issue(
     if user_role_str == "staff" and issue.assignee_id != current_user.id:
         raise AppError("FORBIDDEN", "Staff can only modify assigned issues", status_code=403)
 
+    # assignee_id sent as null means "unassign"; left out means "no change"
+    assignee_changed = "assignee_id" in payload.model_fields_set
+
     # Admin only check for assignee_id or title
-    if (payload.assignee_id is not None or payload.title is not None) and user_role_str != "admin":
+    if (assignee_changed or payload.title is not None) and user_role_str != "admin":
         raise AppError("FORBIDDEN", "Only admins can change assignee or title", status_code=403)
 
     old_status_str = (
         issue.status.value if hasattr(issue.status, "value") else str(issue.status)
     )
 
-    # Handle status change
-    if payload.status is not None:
+    if assignee_changed and payload.assignee_id is not None:
+        if not db.query(User.id).filter(User.id == payload.assignee_id).first():
+            raise AppError("VALIDATION_ERROR", "No such user to assign", status_code=400, fields={"assignee_id": "not_found"})
+
+    # Handle status change (setting the current status again changes nothing and logs nothing)
+    if payload.status is not None and payload.status != old_status_str:
         new_status_str = payload.status
         check_valid_status_transition(old_status_str, new_status_str)
 
@@ -388,7 +363,7 @@ def update_issue(
     if payload.title is not None:
         issue.title = payload.title
 
-    if payload.assignee_id is not None:
+    if assignee_changed:
         issue.assignee_id = payload.assignee_id
 
     if payload.public_response is not None:
@@ -431,6 +406,8 @@ def list_users(
 
     query = db.query(User)
     if role:
+        if role not in {r.value for r in UserRole}:
+            raise AppError("VALIDATION_ERROR", f"Unknown role '{role}'", status_code=400, fields={"role": "invalid"})
         query = query.filter(User.role == role)
 
     users = query.all()

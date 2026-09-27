@@ -1,8 +1,11 @@
+import logging
 from typing import Any, Dict, Optional
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+logger = logging.getLogger(__name__)
 
 
 class AppError(Exception):
@@ -93,9 +96,46 @@ async def unhandled_exception_handler(
     return JSONResponse(status_code=500, content=content)
 
 
+class UnhandledErrorMiddleware:
+    """Turns an unexpected exception into the standard INTERNAL_ERROR JSON response.
+
+    Starlette runs the catch-all Exception handler outside every other middleware, so its response
+    skipped CORS and the browser reported "can't reach the server" instead of the error. Added before
+    CORSMiddleware, this sits inside it, so error responses carry CORS headers too."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        response_started = False
+
+        async def tracking_send(message):
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, tracking_send)
+        except Exception:
+            logger.exception("Unhandled error on %s %s", scope.get("method"), scope.get("path"))
+            if response_started:
+                raise  # too late to send a different response
+            response = JSONResponse(
+                status_code=500,
+                content={"error": {"code": "INTERNAL_ERROR", "message": "An internal server error occurred", "fields": None}},
+            )
+            await response(scope, receive, send)
+
+
 def register_error_handlers(app: FastAPI) -> None:
-    """Registers all custom exception handlers on a FastAPI application instance."""
+    """Registers all custom exception handlers on a FastAPI application instance.
+    Call before adding CORSMiddleware (see UnhandledErrorMiddleware)."""
     app.add_exception_handler(AppError, app_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)
+    app.add_middleware(UnhandledErrorMiddleware)

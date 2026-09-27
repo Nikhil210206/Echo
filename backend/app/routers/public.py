@@ -405,6 +405,7 @@ def submit_me_too(id: str, payload: MeTooRequest, db: Session = Depends(get_db))
         issue_id=issue.id,
     )
     db.add(aspect)
+    rescore_issues(db, {issue.id})
     db.commit()
 
     updated_report_count = get_issue_report_count(db, issue.id)

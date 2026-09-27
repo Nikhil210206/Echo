@@ -23,6 +23,9 @@ from app.services.lifecycle import link_negative_aspects, rescore_issues, unlink
 
 router = APIRouter(tags=["admin"])
 
+# Longest look-back a "days" filter accepts; far larger values overflow date arithmetic
+MAX_DAYS = 3650
+
 
 # --- Pydantic Schemas ---
 class ModerationActionRequest(BaseModel):
@@ -72,7 +75,7 @@ def search_feedback(
     sentiment: Optional[str] = None,
     category: Optional[str] = None,
     location_id: Optional[str] = None,
-    days: Optional[int] = None,
+    days: Optional[int] = Query(None, le=MAX_DAYS),
     status: Optional[str] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -87,6 +90,8 @@ def search_feedback(
 
     # Default status to 'approved' if not explicitly provided
     filter_status = status if status is not None else "approved"
+    if filter_status and filter_status not in {st.value for st in FeedbackStatus}:
+        raise AppError("VALIDATION_ERROR", f"Unknown status '{filter_status}'", status_code=400, fields={"status": "invalid"})
     if filter_status:
         query = query.filter(Feedback.status == filter_status)
 
@@ -315,7 +320,7 @@ def _assemble_analytics(days: int, r: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.get("/analytics/summary")
 def get_analytics_summary(
-    days: int = Query(42, ge=1),
+    days: int = Query(42, ge=1, le=MAX_DAYS),
     current_user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """Get analytics summary including sentiment over time, topic sentiment, heatmap, pipeline, and totals (Admin only)."""
