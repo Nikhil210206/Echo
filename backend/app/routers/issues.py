@@ -50,11 +50,10 @@ def calculate_issue_score_only(db: Session, issue: Issue) -> float:
     now = datetime.now(timezone.utc)
     seven_days_ago = now - timedelta(days=7)
 
+    # IN-subquery instead of JOIN + DISTINCT: Postgres can't DISTINCT over the json `flags` column
     linked_feedback = (
         db.query(Feedback)
-        .join(Aspect, Aspect.feedback_id == Feedback.id)
-        .filter(Aspect.issue_id == issue.id)
-        .distinct()
+        .filter(Feedback.id.in_(db.query(Aspect.feedback_id).filter(Aspect.issue_id == issue.id)))
         .all()
     )
 
@@ -95,11 +94,10 @@ def calculate_issue_breakdown(db: Session, issue: Issue) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     seven_days_ago = now - timedelta(days=7)
 
+    # IN-subquery instead of JOIN + DISTINCT: Postgres can't DISTINCT over the json `flags` column
     linked_feedback = (
         db.query(Feedback)
-        .join(Aspect, Aspect.feedback_id == Feedback.id)
-        .filter(Aspect.issue_id == issue.id)
-        .distinct()
+        .filter(Feedback.id.in_(db.query(Aspect.feedback_id).filter(Aspect.issue_id == issue.id)))
         .all()
     )
 

@@ -99,13 +99,14 @@ def search_feedback(
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         query = query.filter(Feedback.created_at >= cutoff)
 
+    # IN-subquery instead of JOIN + DISTINCT: Postgres can't DISTINCT over the json `flags` column
     if sentiment or category:
-        query = query.join(Aspect, Aspect.feedback_id == Feedback.id)
+        matching = db.query(Aspect.feedback_id)
         if sentiment:
-            query = query.filter(Aspect.sentiment == sentiment)
+            matching = matching.filter(Aspect.sentiment == sentiment)
         if category:
-            query = query.filter(Aspect.category == category)
-        query = query.distinct()
+            matching = matching.filter(Aspect.category == category)
+        query = query.filter(Feedback.id.in_(matching))
 
     total = query.count()
     offset = (page - 1) * page_size
