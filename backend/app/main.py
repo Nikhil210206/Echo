@@ -103,7 +103,8 @@ app.add_middleware(
 
 
 # Health check endpoint
-@app.get("/")
+# HEAD too: uptime monitors (e.g. UptimeRobot) check with HEAD, and a 405 counts as "down"
+@app.api_route("/", methods=["GET", "HEAD"])
 def health_check():
     """Simple root health check endpoint."""
     return {"status": "ok"}
