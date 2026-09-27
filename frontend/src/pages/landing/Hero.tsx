@@ -1,15 +1,27 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DitherField } from "@/components/fx/DitherField";
 import { Magnetic, Marquee } from "@/components/fx/motion";
 import { Arrow, ButtonLink } from "@/components/ui/kit";
 import { gsap, SplitText, useGSAP, prefersReducedMotion } from "@/lib/gsap";
 import { timeAgo } from "@/lib/format";
-import { mock } from "@/mocks/store";
+import { api } from "@/lib/api";
+import type { TickerItem } from "@/lib/types";
 import { cn } from "@/lib/cn";
 
 export function Hero() {
   const ref = useRef<HTMLElement>(null);
-  const ticker = mock.ticker();
+  const [ticker, setTicker] = useState<TickerItem[]>([]);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .ticker()
+      .then((t) => alive && setTicker(t))
+      .catch(() => {}); // the hero works without it
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useGSAP(
     () => {
@@ -90,16 +102,20 @@ export function Hero() {
         <p className="hero-fade eyebrow mt-8 hidden text-bone/35 md:block">↳ move your cursor. every voice makes a wave.</p>
       </div>
 
-      <div className="hero-ticker relative z-10 border-t border-bone/10 bg-ink/40 backdrop-blur-sm">
-        <Marquee speed={45} className="py-3.5">
-          {ticker.map((t, i) => (
-            <span key={i} className="flex items-center gap-3 pr-12 font-mono text-[0.78rem] text-bone/60">
-              <span className={cn("h-1.5 w-1.5 rounded-full", t.sentiment === "negative" ? "bg-signal" : "bg-mint")} />
-              <span className="text-bone/85">“{t.text}”</span>
-              <span className="text-bone/35">{timeAgo(t.at)}</span>
-            </span>
-          ))}
-        </Marquee>
+      {/* Kept mounted while quotes load so the intro animation always has its target */}
+      <div className={cn("hero-ticker relative z-10 min-h-[2.9rem] border-t border-bone/10 bg-ink/40 backdrop-blur-sm", ticker.length === 0 && "invisible")}>
+        {/* Marquee measures its content once on mount, so it mounts only after the quotes arrive */}
+        {ticker.length > 0 && (
+          <Marquee speed={45} className="py-3.5">
+            {ticker.map((t, i) => (
+              <span key={i} className="flex items-center gap-3 pr-12 font-mono text-[0.78rem] text-bone/60">
+                <span className={cn("h-1.5 w-1.5 rounded-full", t.sentiment === "negative" ? "bg-signal" : "bg-mint")} />
+                <span className="text-bone/85">“{t.text}”</span>
+                <span className="text-bone/35">{timeAgo(t.at)}</span>
+              </span>
+            ))}
+          </Marquee>
+        )}
       </div>
     </section>
   );

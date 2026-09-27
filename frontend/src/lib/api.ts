@@ -17,6 +17,7 @@ import type {
   Page,
   PublicIssue,
   PublicStats,
+  TickerItem,
   SpikeAlert,
   SubmitFeedbackInput,
   SubmitFeedbackResult,
@@ -172,6 +173,8 @@ export const api = {
   publicStats: (): Promise<PublicStats> => (USE_MOCKS ? fake(mock.publicStats, 200) : cachedRequest("/public/stats")),
 
   publicIssues: (): Promise<PublicIssue[]> => (USE_MOCKS ? fake(mock.publicIssues, 260) : cachedRequest("/public/issues")),
+
+  ticker: (): Promise<TickerItem[]> => (USE_MOCKS ? fake(mock.ticker, 100) : cachedRequest("/public/ticker")),
 
   /* auth */
   login: (email: string, password: string): Promise<LoginResult> => {

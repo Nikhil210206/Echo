@@ -599,3 +599,36 @@ def get_public_issues(db: Session = Depends(get_db)) -> List[Dict[str, Any]]:
             }
         )
     return result
+
+
+@router.get("/public/ticker")
+def get_public_ticker(db: Session = Depends(get_db)) -> List[Dict[str, Any]]:
+    """Recent feedback quotes for the landing page ticker. Only approved text feedback that nothing
+    flagged (not even masked profanity), using the PII-redacted text, trimmed to a short snippet."""
+    rows = (
+        db.query(Feedback.text_redacted, Feedback.overall_sentiment, Feedback.created_at, Feedback.flags)
+        .filter(
+            Feedback.kind == FeedbackKind.text,
+            Feedback.status == FeedbackStatus.approved,
+            Feedback.overall_sentiment.in_(["positive", "negative"]),
+            Feedback.text_redacted.isnot(None),
+        )
+        .order_by(Feedback.created_at.desc())
+        .limit(40)
+        .all()
+    )
+
+    ticker = []
+    for text, sentiment, created_at, flags in rows:
+        if flags:
+            continue
+        text = text.strip().rstrip(".")
+        if len(text) > TICKER_MAX_CHARS:
+            text = text[: TICKER_MAX_CHARS - 1].rsplit(" ", 1)[0] + "…"
+        ticker.append({"text": text, "sentiment": sentiment, "at": created_at})
+        if len(ticker) == 8:
+            break
+    return ticker
+
+
+TICKER_MAX_CHARS = 120

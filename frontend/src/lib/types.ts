@@ -243,3 +243,10 @@ export interface LiveEvent {
   feedback?: FeedbackRecord;
   issue?: { id: number; title: string; status: IssueStatus; report_count: number };
 }
+
+/** A recent feedback quote for the landing page ticker */
+export interface TickerItem {
+  text: string;
+  sentiment: Sentiment;
+  at: string;
+}

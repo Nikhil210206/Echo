@@ -369,3 +369,29 @@ def test_unexpected_errors_return_json_with_cors(env):
     assert r.status_code == 500
     assert r.json()["error"]["code"] == "INTERNAL_ERROR"
     assert r.headers.get("access-control-allow-origin") == "http://localhost:5180"
+
+
+# --- Landing page ticker ---
+
+
+def test_ticker_shows_only_clean_approved_quotes(env):
+    client, db, loc = env
+
+    def fb(code, text, status=FeedbackStatus.approved, flags=None, sentiment="negative", minutes_ago=1):
+        db.add(Feedback(kind=FeedbackKind.text, location_id=loc.id, tracking_code=code, status=status,
+                        text_redacted=text, overall_sentiment=sentiment, flags=flags or [],
+                        created_at=NOW - timedelta(minutes=minutes_ago)))
+
+    fb("A1", "Mess food was cold today.", minutes_ago=1)
+    fb("A2", "Library staff were lovely", sentiment="positive", minutes_ago=2)
+    fb("B1", "Spammy click here", status=FeedbackStatus.pending, flags=["spam"])
+    fb("B2", "Rejected thing", status=FeedbackStatus.rejected)
+    fb("B3", "Mess food is f*** cold", flags=["profanity_masked"])
+    fb("B4", "Nothing much to say", sentiment="neutral")
+    fb("C1", "word " * 60, minutes_ago=3)
+    db.commit()
+
+    ticker = client.get("/api/public/ticker").json()
+    assert [t["text"] for t in ticker[:2]] == ["Mess food was cold today", "Library staff were lovely"]
+    assert len(ticker) == 3
+    assert len(ticker[2]["text"]) <= 120 and ticker[2]["text"].endswith("…")
