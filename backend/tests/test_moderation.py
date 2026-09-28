@@ -46,3 +46,13 @@ def test_mocking_praise_is_flagged_as_sarcasm():
 def test_genuine_praise_is_not_sarcasm():
     for text in ["roti is good today", "The food was great for dinner", "good for students who study late"]:
         assert moderate_text(text).is_sarcastic is False, text
+
+def test_joke_or_mishap_is_flagged_off_topic():
+    for text in ["dog ate my food", "My cat stole my lunch from the hostel room"]:
+        mod = moderate_text(text)
+        assert mod.flagged is True, text
+        assert mod.is_off_topic is True, text
+
+def test_genuine_animal_complaint_is_not_a_joke():
+    for text in ["Stray dogs roam inside the mess during dinner", "Rats in the hostel kitchen again"]:
+        assert moderate_text(text).flagged is False, text

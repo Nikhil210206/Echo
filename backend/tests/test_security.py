@@ -37,3 +37,17 @@ def test_security_gemini_timeout_or_invalid_json_triggers_fallback():
         assert res.analyzed_by == "lexicon"
         assert res.overall_sentiment == "negative"
         assert len(res.aspects) > 0
+
+
+def test_llm_labels_are_corrected_for_jokes_and_sarcasm():
+    from app.schemas import AspectResult
+    llm_says = [AspectResult(aspect="food", category="mess", sentiment="negative", urgency="high", evidence_span="dog ate my food")]
+    with patch("app.services.analysis.analyze_llm", return_value=llm_says):
+        res = asyncio.run(run_analysis_pipeline("dog ate my food"))
+    assert res.moderation.flagged and res.moderation.is_off_topic
+    assert res.aspects[0].sentiment == "neutral" and res.aspects[0].urgency == "normal"
+
+    llm_says = [AspectResult(aspect="roti", category="mess", sentiment="positive", urgency="normal", evidence_span="roti is good for donkey")]
+    with patch("app.services.analysis.analyze_llm", return_value=llm_says):
+        res = asyncio.run(run_analysis_pipeline("roti is good for donkey"))
+    assert res.moderation.is_sarcastic and res.aspects[0].sentiment == "negative"

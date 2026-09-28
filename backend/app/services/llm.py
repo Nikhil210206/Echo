@@ -25,7 +25,8 @@ For each aspect, output JSON matching this structure:
       "sentiment": "positive | negative | neutral",
       "urgency": "critical | high | normal",
       "evidence_span": "exact quote or phrase from text supporting this aspect",
-      "sarcastic": true | false
+      "sarcastic": true | false,
+      "off_topic": true | false
     }}
   ]
 }}
@@ -33,6 +34,11 @@ For each aspect, output JSON matching this structure:
 Watch for sarcasm and mockery. Praise that is really an insult, such as "the roti is good for donkeys"
 or "great food, if you're a pig", is NOT positive: set "sentiment" to "negative" and "sarcastic" to true.
 Only set "sarcastic" to true for mocking or sarcastic statements; genuine praise or plain complaints are false.
+
+Also watch for text that is not really feedback about the place: jokes, excuses and personal mishaps such as
+"my dog ate my food" or "I dropped my plate". Set "off_topic" to true, "sentiment" to "neutral" and "urgency"
+to "normal" for those. A real problem with the service is NOT off-topic, even if it mentions an animal
+(e.g. "stray dogs roam the mess and eat from the plates" is a genuine hygiene complaint).
 
 Ensure valid JSON output only with no markdown backticks or commentary.
 

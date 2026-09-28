@@ -16,6 +16,7 @@ class AspectResult(BaseModel):
     urgency: Literal["critical", "high", "normal"]
     evidence_span: str = Field(..., description="Exact quote/span from text supporting this aspect")
     sarcastic: bool = Field(False, description="Mocking praise that is really a complaint (e.g. 'good for donkeys')")
+    off_topic: bool = Field(False, description="A joke or personal story, not feedback about the place (e.g. 'dog ate my food')")
 
 class ModerationFlags(BaseModel):
     flagged: bool = False

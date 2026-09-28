@@ -1,6 +1,6 @@
 from app.schemas import AnalysisPipelineResult, ModerationFlags
 from app.services.redact import redact_pii
-from app.services.moderation import moderate_text
+from app.services.moderation import check_joke, check_sarcasm, moderate_text
 from app.services.fallback import analyze_fallback
 from app.services.llm import analyze_llm
 
@@ -42,15 +42,24 @@ async def run_analysis_pipeline(raw_text: str) -> AnalysisPipelineResult:
         analyzed_by = "lexicon"
         aspects = analyze_fallback(processed_text)
 
-    # 5. Sarcasm the LLM spotted but the moderation patterns missed still goes to review,
-    # and a mocking aspect is never counted as praise
+    # 5. Sarcasm and jokes, whether the LLM or the patterns spotted them, go to review.
+    # A mocking aspect is never counted as praise, and a joke is neither a complaint nor urgent
     for a in aspects:
+        a.sarcastic = a.sarcastic or check_sarcasm(a.evidence_span)
+        a.off_topic = a.off_topic or check_joke(a.evidence_span)
         if a.sarcastic:
             a.sentiment = "negative"
+        elif a.off_topic:
+            a.sentiment = "neutral"
+            a.urgency = "normal"
     if any(a.sarcastic for a in aspects) and not moderation.is_sarcastic:
         moderation.is_sarcastic = True
         moderation.flagged = True
         moderation.reasons.append("Sarcastic or mocking, not a genuine compliment")
+    if any(a.off_topic for a in aspects) and not moderation.is_off_topic:
+        moderation.is_off_topic = True
+        moderation.flagged = True
+        moderation.reasons.append("Reads like a joke or personal mishap, not feedback about this place")
 
     # 6. Determine overall sentiment from aspects
     negative_count = sum(1 for a in aspects if a.sentiment == "negative")

@@ -2,7 +2,7 @@ import re
 from typing import List
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from app.schemas import AspectResult
-from app.services.moderation import check_sarcasm
+from app.services.moderation import check_joke, check_sarcasm
 
 analyzer = SentimentIntensityAnalyzer()
 
@@ -160,7 +160,8 @@ def analyze_fallback(text: str) -> List[AspectResult]:
                 sentiment=sentiment,
                 urgency=urgency,
                 evidence_span=clause,
-                sarcastic=sarcastic
+                sarcastic=sarcastic,
+                off_topic=check_joke(clause)
             )
         )
 

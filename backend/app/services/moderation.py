@@ -24,7 +24,7 @@ ABUSIVE_PATTERNS = [
 
 # Mockery: praise that is really an insult ("roti is good for donkeys", "not even dogs would eat this").
 # It reads as positive to a sentiment lexicon, so it is flagged for review and treated as negative.
-ANIMAL = r'(?:(?:street\s+)?dogs?|donkeys?|pigs?|cows?|cattle|goats?|buffalo(?:e?s)?|animals?|horses?|monkeys?|rats?|strays?)'
+ANIMAL = r'(?:(?:street\s+)?dogs?|donkeys?|pigs?|cows?|cattle|goats?|buffalo(?:e?s)?|animals?|horses?|monkeys?|rats?|cats?|strays?)'
 SARCASM_PATTERNS = [
     re.compile(r'\b(?:good|fit|fine|great|perfect|suitable|only|made|meant|best)\s+(?:only\s+)?for\s+(?:the\s+)?' + ANIMAL + r'\b', re.IGNORECASE),
     re.compile(r'\b(?:not\s+even|even)\s+(?:the\s+|a\s+)?' + ANIMAL + r'\s+(?:would|will|wont|won\'t|can|could|cannot|can\'t|don\'t|dont|didn\'t)\b', re.IGNORECASE),
@@ -34,6 +34,16 @@ SARCASM_PATTERNS = [
 def check_sarcasm(text: str) -> bool:
     """Flags mocking praise such as 'roti is good for donkeys'."""
     return bool(text) and any(p.search(text) for p in SARCASM_PATTERNS)
+
+# Jokes and personal mishaps that mention a campus word but say nothing about how the place is run
+# ("dog ate my food", "my cat stole my lunch"). Held for review rather than opening an issue.
+JOKE_PATTERNS = [
+    re.compile(r'\b(?:my\s+|the\s+|a\s+)?' + ANIMAL + r'\s+(?:ate|eaten|stole|took|licked|drank)\s+(?:my|our)\b', re.IGNORECASE),
+]
+
+def check_joke(text: str) -> bool:
+    """Flags jokes and personal mishaps such as 'dog ate my food'."""
+    return bool(text) and any(p.search(text) for p in JOKE_PATTERNS)
 
 # Spam patterns
 SPAM_PATTERNS = [
@@ -163,6 +173,9 @@ def moderate_text(text: str) -> ModerationFlags:
     if check_off_topic(text):
         is_off_topic = True
         reasons.append("Feedback appears off-topic or unrelated to campus facilities")
+    elif check_joke(text):
+        is_off_topic = True
+        reasons.append("Reads like a joke or personal mishap, not feedback about this place")
 
     # Check extreme abusive / safety threat
     for pattern in ABUSIVE_PATTERNS:
