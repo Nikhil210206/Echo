@@ -24,10 +24,15 @@ For each aspect, output JSON matching this structure:
       "category": "category name (e.g., mess, hostel, infrastructure, transport, library, academics, general)",
       "sentiment": "positive | negative | neutral",
       "urgency": "critical | high | normal",
-      "evidence_span": "exact quote or phrase from text supporting this aspect"
+      "evidence_span": "exact quote or phrase from text supporting this aspect",
+      "sarcastic": true | false
     }}
   ]
 }}
+
+Watch for sarcasm and mockery. Praise that is really an insult, such as "the roti is good for donkeys"
+or "great food, if you're a pig", is NOT positive: set "sentiment" to "negative" and "sarcastic" to true.
+Only set "sarcastic" to true for mocking or sarcastic statements; genuine praise or plain complaints are false.
 
 Ensure valid JSON output only with no markdown backticks or commentary.
 

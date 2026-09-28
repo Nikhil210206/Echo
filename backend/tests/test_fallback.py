@@ -50,3 +50,10 @@ def test_junk_aspect_placeholder_filtering():
     assert len(analyze_fallback("[PHONE]")) == 0
     assert len(analyze_fallback("[REG_NO]")) == 0
     assert len(analyze_fallback("Call [PHONE].")) == 0
+
+
+def test_mocking_praise_is_negative_not_positive():
+    aspects = analyze_fallback("roti is good for donkey")
+    assert aspects
+    assert all(a.sentiment == "negative" and a.sarcastic for a in aspects)
+    assert aspects[0].category == "mess"

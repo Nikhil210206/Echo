@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Empty, Panel, Skeleton } from "@/components/admin/AdminShell";
+import { Reporter } from "@/components/admin/Reporter";
 import { EvidenceText } from "@/components/admin/EvidenceText";
 import { pulseFrom } from "@/components/fx/DitherField";
 import { Counter } from "@/components/fx/motion";
@@ -252,6 +253,7 @@ function Evidence({ issue }: { issue: Detail }) {
               )}
               <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-bone/40">
                 <SentimentChip sentiment={e.sentiment} className="!text-xs text-bone/55" />
+                <Reporter name={e.reporter_name} phone={e.reporter_phone} />
                 {e.kind === "text" && (
                   <span className="rounded bg-bone/[0.06] px-1.5 py-0.5 font-mono text-[0.65rem]" title="Which engine produced the labels">
                     {e.analyzed_by === "llm" ? "LLM" : "Lexicon fallback"}

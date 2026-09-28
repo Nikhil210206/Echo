@@ -109,6 +109,8 @@ def _load_issue_core(db: Session, issue_id: str) -> Optional[Dict[str, Any]]:
                 "feedback_id": a.feedback_id,
                 "kind": fb_obj.kind.value if fb_obj and hasattr(fb_obj.kind, "value") else (fb_obj.kind if fb_obj else "text"),
                 "text_redacted": fb_obj.text_redacted if fb_obj else None,
+                "reporter_name": fb_obj.reporter_name if fb_obj else None,
+                "reporter_phone": fb_obj.reporter_phone if fb_obj else None,
                 "evidence_span": a.evidence_span,
                 "sentiment": a.sentiment,
                 "analyzed_by": fb_obj.analyzed_by if fb_obj else "lexicon",

@@ -10,8 +10,9 @@ async def run_analysis_pipeline(raw_text: str) -> AnalysisPipelineResult:
     1. PII Redaction
     2. Moderation checks (profanity masking & flag checks)
     3. LLM aspect extraction (with fallback to VADER/keyword lexicon)
-    4. Overall sentiment derivation
-    5. Returns structured AnalysisPipelineResult
+    4. Sarcasm handling (mocking praise is negative and goes to moderation)
+    5. Overall sentiment derivation
+    6. Returns structured AnalysisPipelineResult
     """
     if not raw_text or not raw_text.strip():
         # Handle empty input gracefully
@@ -41,7 +42,17 @@ async def run_analysis_pipeline(raw_text: str) -> AnalysisPipelineResult:
         analyzed_by = "lexicon"
         aspects = analyze_fallback(processed_text)
 
-    # 5. Determine overall sentiment from aspects
+    # 5. Sarcasm the LLM spotted but the moderation patterns missed still goes to review,
+    # and a mocking aspect is never counted as praise
+    for a in aspects:
+        if a.sarcastic:
+            a.sentiment = "negative"
+    if any(a.sarcastic for a in aspects) and not moderation.is_sarcastic:
+        moderation.is_sarcastic = True
+        moderation.flagged = True
+        moderation.reasons.append("Sarcastic or mocking, not a genuine compliment")
+
+    # 6. Determine overall sentiment from aspects
     negative_count = sum(1 for a in aspects if a.sentiment == "negative")
     positive_count = sum(1 for a in aspects if a.sentiment == "positive")
 

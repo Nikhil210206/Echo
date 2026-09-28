@@ -22,6 +22,19 @@ ABUSIVE_PATTERNS = [
     re.compile(r'\b(kill yourself|go die|i will kill|threat|terrorist|hate group)\b', re.IGNORECASE)
 ]
 
+# Mockery: praise that is really an insult ("roti is good for donkeys", "not even dogs would eat this").
+# It reads as positive to a sentiment lexicon, so it is flagged for review and treated as negative.
+ANIMAL = r'(?:(?:street\s+)?dogs?|donkeys?|pigs?|cows?|cattle|goats?|buffalo(?:e?s)?|animals?|horses?|monkeys?|rats?|strays?)'
+SARCASM_PATTERNS = [
+    re.compile(r'\b(?:good|fit|fine|great|perfect|suitable|only|made|meant|best)\s+(?:only\s+)?for\s+(?:the\s+)?' + ANIMAL + r'\b', re.IGNORECASE),
+    re.compile(r'\b(?:not\s+even|even)\s+(?:the\s+|a\s+)?' + ANIMAL + r'\s+(?:would|will|wont|won\'t|can|could|cannot|can\'t|don\'t|dont|didn\'t)\b', re.IGNORECASE),
+    re.compile(r'\b(?:feed|give)\s+(?:it|this|them)\s+to\s+(?:the\s+)?' + ANIMAL + r'\b', re.IGNORECASE),
+]
+
+def check_sarcasm(text: str) -> bool:
+    """Flags mocking praise such as 'roti is good for donkeys'."""
+    return bool(text) and any(p.search(text) for p in SARCASM_PATTERNS)
+
 # Spam patterns
 SPAM_PATTERNS = [
     re.compile(r'https?://\S+|www\.\S+', re.IGNORECASE),
@@ -114,6 +127,7 @@ def moderate_text(text: str) -> ModerationFlags:
     - duplicate flood
     - off-topic
     - abusive
+    - sarcasm (mocking praise, reviewed before it counts)
 
     Profanity in legitimate complaints is MASKED, and does not cause automatic rejection.
     """
@@ -123,6 +137,7 @@ def moderate_text(text: str) -> ModerationFlags:
     is_duplicate_flood = False
     is_off_topic = False
     is_abusive = False
+    is_sarcastic = False
 
     # Mask profanity
     masked_text = mask_profanity(text)
@@ -156,8 +171,13 @@ def moderate_text(text: str) -> ModerationFlags:
             reasons.append("Contains extreme harassment or threats")
             break
 
-    # Overall flagged status (Only flagged if spam, gibberish, duplicate flood, off-topic, or extreme abusive)
-    flagged = is_spam or is_gibberish or is_duplicate_flood or is_off_topic or is_abusive
+    # Mocking praise: not a real compliment, and not a clear complaint either
+    if check_sarcasm(text):
+        is_sarcastic = True
+        reasons.append("Sarcastic or mocking, not a genuine compliment")
+
+    # Overall flagged status (Only flagged if spam, gibberish, duplicate flood, off-topic, extreme abusive or sarcastic)
+    flagged = is_spam or is_gibberish or is_duplicate_flood or is_off_topic or is_abusive or is_sarcastic
 
     return ModerationFlags(
         flagged=flagged,
@@ -167,5 +187,6 @@ def moderate_text(text: str) -> ModerationFlags:
         is_duplicate_flood=is_duplicate_flood,
         is_off_topic=is_off_topic,
         is_abusive=is_abusive,
+        is_sarcastic=is_sarcastic,
         masked_text=masked_text
     )

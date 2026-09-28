@@ -180,11 +180,15 @@ function addRow(p: {
   analyzed_by?: FeedbackRecord["analyzed_by"];
   code?: string;
   device_hash?: string | null;
+  reporter_name?: string | null;
+  reporter_phone?: string | null;
 }): Row {
   const row: Row = {
     id: feedback.length + 1,
     kind: p.kind,
     text_redacted: p.text,
+    reporter_name: p.reporter_name ?? null,
+    reporter_phone: p.reporter_phone ?? null,
     location_id: p.location_id,
     location_name: locName(p.location_id),
     status: p.status ?? "approved",
@@ -659,6 +663,9 @@ const POS = ["good", "great", "love", "nice", "clean", "fast", "tasty", "helpful
 const URGENT = ["sick", "days", "dead", "unsafe", "danger", "fire", "injury", "exam", "urgent", "week"];
 const PROFANITY = ["damn", "shit", "crap", "hell"];
 const ABUSE = ["idiot", "stupid", "useless", "clown", "moron"];
+// Mocking praise, e.g. "roti is good for donkeys" or "not even dogs would eat this"
+const SARCASM =
+  /\b(?:(?:good|fit|fine|great|perfect|suitable|only|made|meant|best)\s+(?:only\s+)?for\s+(?:the\s+)?|(?:not\s+)?even\s+(?:the\s+|a\s+)?(?:street\s+)?)(?:dog|donkey|pig|cow|cattle|goat|buffalo|animal|horse|monkey|rat|stray)/;
 
 export function redact(text: string) {
   return text
@@ -678,6 +685,7 @@ function moderate(text: string): { flags: ModerationFlag[]; text: string; pendin
   if (letters.length > 8 && vowels / letters.length < 0.18) flags.push("gibberish");
   if (words.length >= 5 && new Set(words).size / words.length < 0.35) flags.push("duplicate_flood");
   if (ABUSE.some((w) => new RegExp(`\\b${w}\\b`).test(lower))) flags.push("abusive");
+  if (SARCASM.test(lower)) flags.push("sarcasm");
   for (const w of PROFANITY) {
     const re = new RegExp(`\\b${w}\\b`, "gi");
     if (re.test(out)) {
@@ -702,7 +710,7 @@ function analyze(text: string, locationId: number): Aspect[] {
     const category = Object.entries(CATEGORY_WORDS).find(([, ws]) => ws.some((w) => new RegExp(`\\b${w}\\b`).test(lower)))?.[0] ?? "General";
     const neg = NEG.filter((w) => new RegExp(`\\b${w}\\b`).test(lower)).length;
     const pos = POS.filter((w) => new RegExp(`\\b${w}\\b`).test(lower)).length;
-    const sentiment: Sentiment = neg > pos ? "negative" : pos > neg ? "positive" : "neutral";
+    const sentiment: Sentiment = SARCASM.test(lower) || neg > pos ? "negative" : pos > neg ? "positive" : "neutral";
     const urg = URGENT.filter((w) => lower.includes(w)).length;
     const urgency: Urgency = sentiment !== "negative" ? "normal" : urg >= 2 ? "critical" : urg === 1 ? "high" : "normal";
     if (category !== "General" && out.some((a) => a.category === category)) continue;
@@ -820,6 +828,8 @@ export const mock = {
       flags: mod.flags,
       analyzed_by: "lexicon",
       code: newCode(),
+      reporter_name: input.name?.trim() || null,
+      reporter_phone: input.phone?.trim() || null,
     });
     emit({ type: mod.pending ? "moderation" : "feedback", at: row.created_at, feedback: publicRow(row) });
     return { tracking_code: row.tracking_code, text_redacted: row.text_redacted!, analyzed_by: row.analyzed_by, aspects };
@@ -983,6 +993,8 @@ export const mock = {
         feedback_id: row.id,
         kind: row.kind,
         text_redacted: row.text_redacted,
+        reporter_name: row.reporter_name,
+        reporter_phone: row.reporter_phone,
         evidence_span: a.evidence_span || null,
         sentiment: a.sentiment,
         analyzed_by: row.analyzed_by,

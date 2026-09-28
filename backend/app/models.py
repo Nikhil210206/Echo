@@ -76,6 +76,9 @@ class Feedback(Base):
     location_id: Mapped[str] = mapped_column(ForeignKey("locations.id"), nullable=False)
     tracking_code: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
     device_hash: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # Optional contact details the reporter chose to leave; kept out of the text and shown to admins only
+    reporter_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    reporter_phone: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[FeedbackStatus] = mapped_column(SAEnum(FeedbackStatus), default=FeedbackStatus.pending)
     overall_sentiment: Mapped[str | None] = mapped_column(String, nullable=True)
     analyzed_by: Mapped[str | None] = mapped_column(String, nullable=True)

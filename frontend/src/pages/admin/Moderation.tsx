@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Empty, PageHead, Skeleton, useConsole } from "@/components/admin/AdminShell";
+import { Reporter } from "@/components/admin/Reporter";
 import { Button, ErrorNote, Spinner } from "@/components/ui/kit";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -14,6 +15,7 @@ const FLAG: Record<ModerationFlag, { label: string; why: string }> = {
   duplicate_flood: { label: "Duplicate flood", why: "The same word repeated over and over" },
   off_topic: { label: "Off-topic", why: "Nothing to do with campus services" },
   abusive: { label: "Abusive", why: "Attacks a person. The complaint inside may still be valid" },
+  sarcasm: { label: "Sarcasm", why: "Mocking, not real praise. Approve to count it as a complaint, or reject it" },
   profanity_masked: { label: "Profanity masked", why: "Kept, with the swear words hidden" },
 };
 
@@ -131,6 +133,7 @@ function QueueCard({ item, onHandled, onDone }: { item: FeedbackRecord; onHandle
             {FLAG[fl].label}
           </span>
         ))}
+        <Reporter name={item.reporter_name} phone={item.reporter_phone} className="text-xs" />
         <span className="ml-auto text-xs text-bone/40">
           {item.location_name} · {timeAgo(item.created_at)}
         </span>

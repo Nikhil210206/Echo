@@ -56,6 +56,9 @@ export interface SubmitFeedbackInput {
   location_slug: string;
   /** Honeypot. Real people never see or fill this. */
   website?: string;
+  /** Optional, for follow-up. Only admins and staff see these. */
+  name?: string;
+  phone?: string;
 }
 
 export interface SubmitFeedbackResult {
@@ -153,12 +156,14 @@ export interface LoginResult {
   user: User;
 }
 
-export type ModerationFlag = "spam" | "gibberish" | "duplicate_flood" | "off_topic" | "abusive" | "profanity_masked";
+export type ModerationFlag = "spam" | "gibberish" | "duplicate_flood" | "off_topic" | "abusive" | "sarcasm" | "profanity_masked";
 
 export interface FeedbackRecord {
   id: number;
   kind: "text" | "me_too";
   text_redacted: string | null;
+  reporter_name?: string | null;
+  reporter_phone?: string | null;
   location_id: number;
   location_name: string;
   status: ModerationStatus;
@@ -202,6 +207,8 @@ export interface EvidenceItem {
   feedback_id: number;
   kind: "text" | "me_too";
   text_redacted: string | null;
+  reporter_name?: string | null;
+  reporter_phone?: string | null;
   evidence_span: string | null;
   sentiment: Sentiment;
   analyzed_by: AnalyzedBy;

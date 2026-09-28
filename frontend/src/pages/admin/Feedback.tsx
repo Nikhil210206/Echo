@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { Empty, PageHead, Skeleton } from "@/components/admin/AdminShell";
 import { EvidenceText } from "@/components/admin/EvidenceText";
 import { IconSearch } from "@/components/admin/icons";
+import { Reporter } from "@/components/admin/Reporter";
 import { Button, ErrorNote, SentimentChip, Spinner, UrgencyTag } from "@/components/ui/kit";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -200,6 +201,8 @@ export default function Feedback() {
                       {a.issue_id && <span className="font-mono text-lilac">#{a.issue_id}</span>}
                     </span>
                   ))}
+                  <Reporter name={f.reporter_name} phone={f.reporter_phone} />
+                  {f.flags.includes("sarcasm") && <span className="rounded bg-amber/15 px-1.5 py-0.5 text-amber">sarcasm</span>}
                   {f.flags.includes("profanity_masked") && <span className="rounded bg-amber/15 px-1.5 py-0.5 text-amber">profanity masked</span>}
                   {f.status !== "approved" && <span className="rounded bg-signal/15 px-1.5 py-0.5 text-signal">{f.status}</span>}
                   <span className={cn("rounded bg-bone/[0.06] px-1.5 py-0.5 font-mono text-[0.65rem]", f.kind === "me_too" && "hidden")}>

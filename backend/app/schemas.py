@@ -15,6 +15,8 @@ class AspectResult(BaseModel):
     sentiment: Literal["positive", "negative", "neutral"]
     urgency: Literal["critical", "high", "normal"]
     evidence_span: str = Field(..., description="Exact quote/span from text supporting this aspect")
+    sarcastic: bool = Field(False, description="Mocking praise that is really a complaint (e.g. 'good for donkeys')")
+
 class ModerationFlags(BaseModel):
     flagged: bool = False
     reasons: List[str] = Field(default_factory=list)
@@ -23,6 +25,7 @@ class ModerationFlags(BaseModel):
     is_duplicate_flood: bool = False
     is_off_topic: bool = False
     is_abusive: bool = False
+    is_sarcastic: bool = False
     masked_text: str = ""
 
 class AnalysisPipelineResult(BaseModel):

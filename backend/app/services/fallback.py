@@ -2,6 +2,7 @@ import re
 from typing import List
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from app.schemas import AspectResult
+from app.services.moderation import check_sarcasm
 
 analyzer = SentimentIntensityAnalyzer()
 
@@ -131,9 +132,14 @@ def analyze_fallback(text: str) -> List[AspectResult]:
 
         vs = analyzer.polarity_scores(clause)
         compound = vs['compound']
+        sarcastic = check_sarcasm(clause)
 
+        # Mocking praise ("good for donkeys") reads positive to VADER but is a complaint
+        if sarcastic:
+            sentiment = "negative"
+            compound = min(compound, -0.3)
         # Sickness/illness from food is inherently negative
-        if any(k in clause.lower() for k in ["sick from food", "food poisoning", "food made me sick", "vomit"]):
+        elif any(k in clause.lower() for k in ["sick from food", "food poisoning", "food made me sick", "vomit"]):
             sentiment = "negative"
             compound = min(compound, -0.65)
         elif compound >= 0.05:
@@ -153,7 +159,8 @@ def analyze_fallback(text: str) -> List[AspectResult]:
                 category=cat,
                 sentiment=sentiment,
                 urgency=urgency,
-                evidence_span=clause
+                evidence_span=clause,
+                sarcastic=sarcastic
             )
         )
 

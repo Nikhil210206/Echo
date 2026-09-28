@@ -32,3 +32,17 @@ def test_legitimate_complaint_with_profanity():
     assert mod.flagged is False
     assert "f***" in mod.masked_text or "f******" in mod.masked_text
     assert "terrible" in mod.masked_text
+
+def test_mocking_praise_is_flagged_as_sarcasm():
+    for text in [
+        "roti is good for donkey",
+        "The dal is only fit for pigs",
+        "not even street dogs would eat this curry",
+    ]:
+        mod = moderate_text(text)
+        assert mod.flagged is True, text
+        assert mod.is_sarcastic is True, text
+
+def test_genuine_praise_is_not_sarcasm():
+    for text in ["roti is good today", "The food was great for dinner", "good for students who study late"]:
+        assert moderate_text(text).is_sarcastic is False, text

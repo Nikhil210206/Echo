@@ -54,7 +54,10 @@ def format_feedback_record(fb: Feedback) -> Dict[str, Any]:
 
     return {
         "id": fb.id,
+        "kind": fb.kind.value if hasattr(fb.kind, "value") else str(fb.kind),
         "text_redacted": fb.text_redacted,
+        "reporter_name": fb.reporter_name,
+        "reporter_phone": fb.reporter_phone,
         "location_name": loc_name,
         "tracking_code": fb.tracking_code,
         "status": status_str,

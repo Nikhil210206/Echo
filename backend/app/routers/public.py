@@ -1,4 +1,5 @@
 import asyncio
+import re
 import secrets
 import string
 from typing import Any, Dict, List, Optional
@@ -32,12 +33,22 @@ from app.services.lifecycle import (
 
 router = APIRouter(tags=["public"])
 
+# Digits with an optional leading +, spaces, dashes and brackets
+PHONE_RE = re.compile(r"\+?[\d\s()-]+")
+
+
+def valid_phone(phone: str) -> bool:
+    """7 to 15 digits in all, the international maximum."""
+    return bool(PHONE_RE.fullmatch(phone)) and 7 <= sum(c.isdigit() for c in phone) <= 15
+
 
 # --- Pydantic Schemas ---
 class FeedbackCreateRequest(BaseModel):
     text: str
     location_slug: str
     website: Optional[str] = None
+    name: Optional[str] = None
+    phone: Optional[str] = None
 
 
 class MeTooRequest(BaseModel):
@@ -250,6 +261,17 @@ async def submit_feedback(
             fields={"text": "too_long"},
         )
 
+    name = (payload.name or "").strip()[:80] or None
+    phone = (payload.phone or "").strip() or None
+    if phone and not valid_phone(phone):
+        raise AppError(
+            "VALIDATION_ERROR",
+            "That phone number doesn't look right",
+            status_code=400,
+            fields={"phone": "invalid"},
+        )
+    payload.name, payload.phone = name, phone
+
     # Database work runs in a thread: blocking queries in this async handler would stall every other request
     loc = await asyncio.to_thread(lambda: db.query(Location).filter(Location.slug == payload.location_slug).first())
     if not loc:
@@ -276,6 +298,8 @@ def _store_feedback(db: Session, payload: FeedbackCreateRequest, loc: Location, 
         flags.append("off_topic")
     if mod.is_abusive:
         flags.append("abusive")
+    if mod.is_sarcastic:
+        flags.append("sarcasm")
 
     if mod.masked_text and mod.masked_text != payload.text:
         flags.append("profanity_masked")
@@ -295,6 +319,8 @@ def _store_feedback(db: Session, payload: FeedbackCreateRequest, loc: Location, 
         overall_sentiment=analysis_result.overall_sentiment,
         analyzed_by=analysis_result.analyzed_by,
         flags=flags,
+        reporter_name=payload.name,
+        reporter_phone=payload.phone,
     )
     db.add(feedback)
     db.flush()
@@ -345,6 +371,9 @@ def _store_feedback(db: Session, payload: FeedbackCreateRequest, loc: Location, 
         "overall_sentiment": feedback.overall_sentiment,
         "analyzed_by": feedback.analyzed_by,
         "flags": feedback.flags or [],
+        "kind": "text",
+        "reporter_name": feedback.reporter_name,
+        "reporter_phone": feedback.reporter_phone,
         "created_at": feedback.created_at,
         "aspects": aspects_out,
     }

@@ -207,6 +207,9 @@ function MeTooCard({ issue }: { issue: IssueSummary }) {
 function FeedbackForm({ location, onDone, hasIssues }: { location: Location; onDone: (r: SubmitFeedbackResult) => void; hasIssues: boolean }) {
   const [text, setText] = useState("");
   const [website, setWebsite] = useState("");
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [phoneError, setPhoneError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [touched, setTouched] = useState(false);
@@ -227,15 +230,28 @@ function FeedbackForm({ location, onDone, hasIssues }: { location: Location; onD
     e.preventDefault();
     setTouched(true);
     if (tooShort || tooLong) return;
+    const digits = phone.replace(/\D/g, "").length;
+    if (phone.trim() && (!/^\+?[\d\s()-]+$/.test(phone.trim()) || digits < 7 || digits > 15)) {
+      setPhoneError("That phone number doesn't look right.");
+      return;
+    }
     setBusy(true);
     setError(null);
+    setPhoneError(null);
     try {
-      const r = await api.submitFeedback({ text, location_slug: location.slug, website });
+      const r = await api.submitFeedback({
+        text,
+        location_slug: location.slug,
+        website,
+        name: name.trim() || undefined,
+        phone: phone.trim() || undefined,
+      });
       saveCode(r.tracking_code, `${location.name}: ${text.slice(0, 40)}${text.length > 40 ? "…" : ""}`);
       onDone(r);
     } catch (err) {
       const e = err as ApiError;
-      setError(e.fields?.text === "too_short" ? `Tell us a little more: at least ${MIN} characters.` : e.message);
+      if (e.fields?.phone) setPhoneError(e.message);
+      else setError(e.fields?.text === "too_short" ? `Tell us a little more: at least ${MIN} characters.` : e.message);
     } finally {
       setBusy(false);
     }
@@ -268,13 +284,59 @@ function FeedbackForm({ location, onDone, hasIssues }: { location: Location; onD
         />
         <div className="flex items-center justify-between px-4 pb-2.5 pt-1">
           <span id="feedback-help" className={cn("text-xs", touched && tooShort ? "text-[#c53d0c]" : "text-ink/45")}>
-            {touched && tooShort ? `At least ${MIN} characters` : "Anonymous. Numbers and emails are removed."}
+            {touched && tooShort ? `At least ${MIN} characters` : "Numbers and emails in here are removed."}
           </span>
           <span className={cn("font-mono text-xs tabular", tooLong ? "text-[#c53d0c]" : "text-ink/40")}>
             {len}/{MAX}
           </span>
         </div>
       </div>
+
+      <fieldset className="mt-6">
+        <legend className="eyebrow mb-2 block text-ink/50">Your details · optional</legend>
+        <p className="mb-3 text-sm text-ink/60">So staff can reach you about this. Only they see it, never the public.</p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="sr-only" htmlFor="reporter-name">
+            Name
+          </label>
+          <input
+            id="reporter-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={80}
+            autoComplete="name"
+            placeholder="Name"
+            className="h-14 rounded-[1.2rem] bg-white px-4 text-lg outline-none ring-2 ring-transparent placeholder:text-ink/30 focus:ring-cobalt"
+          />
+          <label className="sr-only" htmlFor="reporter-phone">
+            Phone number
+          </label>
+          <input
+            id="reporter-phone"
+            type="tel"
+            inputMode="tel"
+            value={phone}
+            onChange={(e) => {
+              setPhone(e.target.value);
+              setPhoneError(null);
+            }}
+            maxLength={20}
+            autoComplete="tel"
+            placeholder="Phone number"
+            aria-invalid={!!phoneError}
+            aria-describedby={phoneError ? "phone-error" : undefined}
+            className={cn(
+              "h-14 rounded-[1.2rem] bg-white px-4 text-lg outline-none ring-2 placeholder:text-ink/30 focus:ring-cobalt",
+              phoneError ? "ring-signal" : "ring-transparent",
+            )}
+          />
+        </div>
+        {phoneError && (
+          <p id="phone-error" className="mt-2 text-xs text-[#c53d0c]">
+            {phoneError}
+          </p>
+        )}
+      </fieldset>
 
       {/* Honeypot: invisible to people, tempting to bots */}
       <div aria-hidden className="absolute -left-[9999px] h-px w-px overflow-hidden">
@@ -293,7 +355,7 @@ function FeedbackForm({ location, onDone, hasIssues }: { location: Location; onD
           "Send it"
         )}
       </Button>
-      <p className="mt-4 text-center text-xs text-ink/45">You'll get a tracking code. No account, no name.</p>
+      <p className="mt-4 text-center text-xs text-ink/45">You'll get a tracking code. No account needed.</p>
     </form>
   );
 }
