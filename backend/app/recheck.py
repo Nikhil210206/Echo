@@ -16,6 +16,7 @@ from sqlalchemy.orm import joinedload
 from app.db import SessionLocal
 from app.models import Aspect, Feedback, FeedbackKind, FeedbackStatus, Issue, IssueEvent, IssueStatus
 from app.services.lifecycle import rescore_issues, unlink_feedback
+from app.services.feedback_index import update_feedback_embedding
 from app.services.moderation import check_joke, check_sarcasm
 
 # Flags that only mark a cleanup, not a reason to hold feedback back
@@ -69,6 +70,7 @@ def main(apply: bool) -> None:
             fb.overall_sentiment = overall_sentiment(fb.aspects)
             fb.flags = list(fb.flags or []) + new_flags
             fb.status = FeedbackStatus.pending
+            update_feedback_embedding(fb)
             touched_issue_ids |= unlink_feedback(db, fb)
 
         if not apply:

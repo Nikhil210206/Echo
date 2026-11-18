@@ -1,26 +1,36 @@
 import asyncio
 import json
-import os
+import logging
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, Optional, Set
 
-from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from jose import JWTError, jwt
-from sqlalchemy.orm import Session
 
+from app.auth import ALGORITHM, JWT_SECRET, security
 from app.db import SessionLocal
 from app.errors import AppError
 from app.models import User
 
-load_dotenv()
-
-JWT_SECRET = os.getenv("JWT_SECRET")
-ALGORITHM = "HS256"
-
 router = APIRouter(tags=["stream"])
+
+
+class StreamAccessLogFilter(logging.Filter):
+    """Remove the query from Uvicorn stream access logs, including requests from older clients."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str):
+            path, _, _ = args[2].partition("?")
+            if path.rstrip("/") == "/api/stream":
+                record.args = (*args[:2], path, *args[3:])
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(StreamAccessLogFilter())
 
 # In-memory pub/sub subscribers
 subscribers: Set[asyncio.Queue] = set()
@@ -77,17 +87,14 @@ def _lookup_role(user_id: str) -> Optional[str]:
 
 @router.get("/stream")
 async def stream_events(
-    token: Optional[str] = Query(None),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> StreamingResponse:
     """SSE endpoint for streaming real-time system events to admin clients."""
-    if not token:
+    if not credentials:
         raise AppError("UNAUTHORIZED", "Missing authentication token", status_code=401)
 
-    if not JWT_SECRET:
-        raise AppError("INTERNAL_ERROR", "JWT secret configuration missing", status_code=500)
-
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[ALGORITHM])
         user_id: Optional[str] = payload.get("sub")
         if not user_id:
             raise AppError("UNAUTHORIZED", "Invalid token payload", status_code=401)

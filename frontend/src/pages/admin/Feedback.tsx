@@ -1,16 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Empty, PageHead, Skeleton } from "@/components/admin/AdminShell";
 import { EvidenceText } from "@/components/admin/EvidenceText";
 import { IconSearch } from "@/components/admin/icons";
 import { Reporter } from "@/components/admin/Reporter";
 import { Button, ErrorNote, SentimentChip, Spinner, UrgencyTag } from "@/components/ui/kit";
-import { api } from "@/lib/api";
+import { api, USE_MOCKS } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { CATEGORIES, categoryLabel, timeAgo } from "@/lib/format";
 import { gsap, useGSAP, prefersReducedMotion } from "@/lib/gsap";
-import type { FeedbackQuery, FeedbackRecord, Sentiment } from "@/lib/types";
-import { locations } from "@/mocks/store";
+import type { FeedbackHit, FeedbackQuery, FeedbackRecord, Location, Sentiment } from "@/lib/types";
 
 const PAGE = 20;
 const RANGES = [
@@ -18,30 +17,45 @@ const RANGES = [
   { v: "7", l: "7 days" },
   { v: "30", l: "30 days" },
 ];
+const STATUSES = [
+  { v: "", l: "Any issue status" },
+  { v: "active", l: "Unresolved" },
+  { v: "open", l: "Open" },
+  { v: "acknowledged", l: "Acknowledged" },
+  { v: "in_progress", l: "In progress" },
+  { v: "resolved", l: "Resolved" },
+  { v: "reopened", l: "Reopened" },
+];
 
 export default function Feedback() {
   const [params, setParams] = useSearchParams();
   const q = params.get("q") ?? "";
+  const semantic = params.get("mode") === "semantic";
   const [text, setText] = useState(q);
   const [items, setItems] = useState<FeedbackRecord[] | null>(null);
+  const [hits, setHits] = useState<FeedbackHit[] | null>(null);
+  const [places, setPlaces] = useState<Location[]>([]);
+  const [retry, setRetry] = useState(0);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const list = useRef<HTMLUListElement>(null);
+  const generation = useRef(0);
 
   const query: FeedbackQuery = useMemo(
     () => ({
       q: q || undefined,
       sentiment: (params.get("sentiment") as Sentiment) || undefined,
       category: params.get("category") || undefined,
-      location_id: params.get("location") ? Number(params.get("location")) : undefined,
+      location_id: params.get("location") || undefined,
       days: params.get("days") ? Number(params.get("days")) : undefined,
+      issue_status: (params.get("issue_status") as FeedbackQuery["issue_status"]) || undefined,
       page_size: PAGE,
     }),
     [params, q],
   );
-  const key = JSON.stringify(query);
+  const key = JSON.stringify({ query, semantic });
 
   const set = (k: string, v: string) => {
     const p = new URLSearchParams(params);
@@ -50,18 +64,43 @@ export default function Feedback() {
     setParams(p, { replace: true });
   };
 
-  // Debounce typing into the URL
   useEffect(() => {
-    if (text === q) return;
-    const t = setTimeout(() => set("q", text.trim()), 300);
+    if (text.trim() === q) return;
+    const t = setTimeout(() => setParams((previous) => {
+      const updated = new URLSearchParams(previous);
+      if (text.trim()) updated.set("q", text.trim());
+      else updated.delete("q");
+      return updated;
+    }, { replace: true }), 300);
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text]);
+  }, [text, q, setParams]);
+
+  useEffect(() => { setText(q); }, [q]);
 
   useEffect(() => {
     let alive = true;
+    api.locations().then((rows) => { if (alive) setPlaces(rows); }).catch(() => {});
+    return () => { alive = false; };
+  }, [retry]);
+
+  useEffect(() => {
+    let alive = true;
+    generation.current += 1;
     setItems(null);
+    setHits(null);
     setPage(1);
+    setError(null);
+    setLoadingMore(false);
+    if (semantic) {
+      if (q && !USE_MOCKS) {
+        api.semanticFeedback({
+          q, sentiment: query.sentiment, category: query.category, location: query.location_id?.toString(),
+          days: query.days, issue_status: query.issue_status,
+        }).then((rows) => { if (alive) setHits(rows); })
+          .catch((e: Error) => { if (alive) setError(e.message); });
+      }
+      return () => { alive = false; };
+    }
     api
       .feedback({ ...query, page: 1 })
       .then((r) => {
@@ -75,18 +114,20 @@ export default function Feedback() {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, retry]);
 
   async function more() {
+    const current = generation.current;
     setLoadingMore(true);
     try {
       const r = await api.feedback({ ...query, page: page + 1 });
+      if (generation.current !== current) return;
       setItems((prev) => [...(prev ?? []), ...r.items]);
       setPage(page + 1);
     } catch (e) {
-      setError((e as Error).message);
+      if (generation.current === current) setError((e as Error).message);
     } finally {
-      setLoadingMore(false);
+      if (generation.current === current) setLoadingMore(false);
     }
   }
 
@@ -99,19 +140,21 @@ export default function Feedback() {
   );
 
   const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
-  const active = [...params.keys()].filter((k) => k !== "q").length + (q ? 1 : 0);
+  const active = [...params.keys()].some((k) => k !== "mode");
 
   return (
     <div>
       <PageHead
-        eyebrow="Full-text search"
+        eyebrow="Feedback search"
         title={
           <>
             Every <span className="serif-accent text-lilac">voice</span>
           </>
         }
       >
-        <p className="font-mono text-sm text-bone/50">{items ? `${total} result${total === 1 ? "" : "s"}` : " "}</p>
+        <p className="font-mono text-sm text-bone/50">
+          {semantic ? (hits && `${hits.length} ranked matches`) : (items && `${total} result${total === 1 ? "" : "s"}`)}
+        </p>
       </PageHead>
 
       <div className="mb-4 flex items-center gap-3 rounded-full bg-ink-2 px-5 ring-1 ring-bone/10 focus-within:ring-2 focus-within:ring-lilac">
@@ -122,8 +165,9 @@ export default function Feedback() {
         <input
           id="q"
           value={text}
+          maxLength={500}
           onChange={(e) => setText(e.target.value)}
-          placeholder="Search what people wrote, e.g. wifi, cold dinner, route 12"
+          placeholder={semantic ? "Describe a problem, e.g. trouble getting online" : "Search what people wrote, e.g. wifi, cold dinner, route 12"}
           className="h-14 min-w-0 flex-1 bg-transparent text-lg outline-none placeholder:text-bone/30"
         />
         {text && (
@@ -134,6 +178,12 @@ export default function Feedback() {
       </div>
 
       <div className="mb-6 flex flex-wrap items-center gap-2">
+        <Seg
+          label="Search mode"
+          value={semantic ? "semantic" : ""}
+          options={[{ v: "", l: "Keyword" }, { v: "semantic", l: "Semantic" }]}
+          onChange={(v) => set("mode", v)}
+        />
         <Seg
           label="Sentiment"
           value={params.get("sentiment") ?? ""}
@@ -150,14 +200,16 @@ export default function Feedback() {
           label="Place"
           value={params.get("location") ?? ""}
           onChange={(v) => set("location", v)}
-          options={[{ v: "", l: "All places" }, ...locations.map((l) => ({ v: String(l.id), l: l.name }))]}
+          options={[{ v: "", l: "All places" }, ...places.map((l) => ({ v: String(l.id), l: l.name }))]}
         />
         <Seg label="Range" value={params.get("days") ?? ""} options={RANGES} onChange={(v) => set("days", v)} />
-        {active > 0 && (
+        <Select label="Issue status" value={params.get("issue_status") ?? ""} options={STATUSES}
+          onChange={(v) => set("issue_status", v)} />
+        {active && (
           <button
             onClick={() => {
               setText("");
-              setParams({}, { replace: true });
+              setParams(semantic ? { mode: "semantic" } : {}, { replace: true });
             }}
             className="ml-auto text-sm text-lilac hover:text-bone"
           >
@@ -166,9 +218,34 @@ export default function Feedback() {
         )}
       </div>
 
-      {error && <ErrorNote className="mb-4">{error}</ErrorNote>}
+      {error && (
+        <div className="mb-4 flex items-center gap-3">
+          <ErrorNote>{error}</ErrorNote>
+          <Button variant="ghost" onClick={() => setRetry((value) => value + 1)}>Retry</Button>
+        </div>
+      )}
 
-      {!items ? (
+      {semantic ? (
+        USE_MOCKS ? <Empty title="Semantic search needs the Echo API">Set VITE_USE_MOCKS=false to connect to a backend.</Empty> :
+        !q ? <Empty title="Search by meaning">Describe the feedback you want to find.</Empty> :
+        hits ? (
+          hits.length ? <ul className="space-y-2">{hits.map((hit) => (
+            <li key={hit.id} className="rounded-[1.5rem] bg-ink-2 p-5 ring-1 ring-bone/[0.06]">
+              <p className="break-words text-bone/85">{hit.excerpt}</p>
+              <div className="mt-3 flex flex-wrap gap-3 text-xs text-bone/55">
+                <Link className="text-lilac hover:underline" to={`/admin/feedback/${hit.id}`}>Open feedback</Link>
+                <span>{hit.location_name} · {timeAgo(hit.created_at)}</span>
+                {hit.similarity !== null && <span title="Cosine similarity from −1 to 1. Higher means closer in meaning.">
+                  Cosine similarity {hit.similarity.toFixed(3)}
+                </span>}
+                {hit.issues.map((issue) => <Link key={issue.id} className="text-lilac hover:underline"
+                  to={`/admin/issues/${issue.id}`}>Issue · {issue.status.replaceAll("_", " ")}</Link>)}
+              </div>
+            </li>
+          ))}</ul> : <Empty title="No semantic matches">Widen the filters or try a keyword search.</Empty>
+        ) : !error && <Skeleton className="h-24" />
+      ) : !items ? (
+        !error &&
         <div className="space-y-2">
           {Array.from({ length: 6 }).map((_, i) => (
             <Skeleton key={i} className="h-24" />

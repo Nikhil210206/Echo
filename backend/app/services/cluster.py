@@ -1,19 +1,25 @@
 import os
 import math
+from functools import lru_cache
+from threading import Lock
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 
 DEFAULT_THRESHOLD = float(os.getenv("CLUSTERING_THRESHOLD", "0.65"))
 
-_embedding_model = None
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+_model_lock = Lock()
+
+@lru_cache(maxsize=1)
+def _load_embedding_model():
+    from fastembed import TextEmbedding
+
+    return TextEmbedding(model_name=EMBEDDING_MODEL)
+
 
 def get_embedding_model():
-    global _embedding_model
-    if _embedding_model is None:
-        from fastembed import TextEmbedding
-        # Load all-MiniLM-L6-v2 model via fastembed
-        _embedding_model = TextEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    return _embedding_model
+    with _model_lock:
+        return _load_embedding_model()
 
 def compute_embedding(text: str) -> List[float]:
     """Generates a normalized 384-dim embedding vector using fastembed (ONNX)."""

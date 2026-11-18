@@ -23,6 +23,7 @@ engine = create_engine(
     pool_recycle=1800,
     pool_size=20,
     max_overflow=10,
+    hide_parameters=True,
 )
 
 # Only ping connections that sat idle long enough to have been dropped, instead of pool_pre_ping on every checkout

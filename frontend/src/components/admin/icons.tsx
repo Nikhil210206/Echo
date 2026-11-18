@@ -36,6 +36,13 @@ export const IconShield = (p: SVGProps<SVGSVGElement>) => (
     <path d="m9 12 2 2 4-4" />
   </svg>
 );
+
+export const IconChat = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H5l1.6-3.4a7.5 7.5 0 1 1 13.4-4.1Z" />
+    <path d="M9 11.5h7m-7 3h4" />
+  </svg>
+);
 export const IconQr = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}>
     <rect x="4" y="4" width="6" height="6" rx="1" />

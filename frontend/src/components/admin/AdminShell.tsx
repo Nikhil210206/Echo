@@ -6,7 +6,7 @@ import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/cn";
 import { gsap, useGSAP, prefersReducedMotion } from "@/lib/gsap";
 import { useLive } from "@/lib/live";
-import { IconExit, IconPulse, IconQr, IconSearch, IconShield, IconStack } from "./icons";
+import { IconChat, IconExit, IconPulse, IconQr, IconSearch, IconShield, IconStack } from "./icons";
 
 /* ---- shared console state ---------------------------------------------- */
 
@@ -21,6 +21,7 @@ const NAV = [
   { to: "/admin", label: "Dashboard", icon: IconPulse, admin: true, end: true },
   { to: "/admin/issues", label: "Issues", icon: IconStack, admin: false, end: false },
   { to: "/admin/feedback", label: "Feedback", icon: IconSearch, admin: true, end: false },
+  { to: "/admin/assistant", label: "Assistant", icon: IconChat, admin: false, end: false },
   { to: "/admin/moderation", label: "Moderation", icon: IconShield, admin: true, end: false, badge: true },
   { to: "/admin/qr", label: "QR codes", icon: IconQr, admin: true, end: false },
 ];
@@ -96,7 +97,7 @@ export function AdminShell() {
           {isAdmin && (
             <>
               <span className={cn("h-2 w-2 rounded-full", live ? "bg-mint shadow-[0_0_10px_2px_rgba(143,240,174,.5)]" : "bg-bone/30")} />
-              {live ? "Live" : "Reconnecting…"}
+              {live ? "Live" : "Live unavailable"}
             </>
           )}
           {USE_MOCKS && <span className="ml-auto font-mono text-[0.65rem] text-bone/30">mock data</span>}

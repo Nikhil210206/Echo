@@ -1,4 +1,5 @@
 import os
+import logging
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,8 +11,10 @@ from app.auth import router as auth_router
 from app.errors import register_error_handlers
 from app.routers.admin import router as admin_router
 from app.routers.ask import router as ask_router
+from app.routers.assistant import router as assistant_router
 from app.routers.issues import router as issues_router
 from app.routers.public import router as public_router
+from app.routers.retrieval import router as retrieval_router
 from app.routers.stream import router as stream_router
 
 import asyncio
@@ -21,6 +24,7 @@ from sqlalchemy import text
 
 # Load environment variables
 load_dotenv()
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 
 app = FastAPI(
     title="Echo API",
@@ -117,3 +121,5 @@ app.include_router(issues_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
 app.include_router(stream_router, prefix="/api")
 app.include_router(ask_router)
+app.include_router(retrieval_router)
+app.include_router(assistant_router)

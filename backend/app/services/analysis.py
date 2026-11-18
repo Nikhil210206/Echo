@@ -1,10 +1,16 @@
-from app.schemas import AnalysisPipelineResult, ModerationFlags
+from collections.abc import Awaitable, Callable
+
+from app.schemas import AnalysisPipelineResult, AspectResult, ModerationFlags
 from app.services.redact import redact_pii
 from app.services.moderation import check_joke, check_sarcasm, moderate_text
 from app.services.fallback import analyze_fallback
 from app.services.llm import analyze_llm
 
-async def run_analysis_pipeline(raw_text: str) -> AnalysisPipelineResult:
+async def run_analysis_pipeline(
+    raw_text: str,
+    *,
+    analyzer: Callable[[str], Awaitable[list[AspectResult] | None]] | None = None,
+) -> AnalysisPipelineResult:
     """
     Main feedback analysis pipeline:
     1. PII Redaction
@@ -35,7 +41,7 @@ async def run_analysis_pipeline(raw_text: str) -> AnalysisPipelineResult:
 
     # 3. LLM analysis attempt
     analyzed_by = "llm"
-    aspects = await analyze_llm(processed_text, timeout=3.0)
+    aspects = await analyzer(processed_text) if analyzer else await analyze_llm(processed_text, timeout=3.0)
 
     # 4. Fallback if LLM failed or yielded no results
     if aspects is None or len(aspects) == 0:

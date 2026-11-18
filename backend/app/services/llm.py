@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import List, Optional
 
 import httpx
@@ -98,37 +99,55 @@ async def _call_gemini(api_key: str, prompt: str) -> Optional[str]:
     return response.text if response else None
 
 
-async def analyze_llm(text: str, timeout: float = 3.0) -> Optional[List[AspectResult]]:
-    """
-    Calls the configured LLM (Groq, xAI Grok, or Gemini — first API key found) with a strict
-    structured prompt and timeout. LLM_TIMEOUT in the environment overrides the timeout.
-    Returns List[AspectResult] if successful, or None on failure/timeout/invalid JSON.
-    """
+@dataclass(frozen=True)
+class AnalysisAttempt:
+    aspects: Optional[List[AspectResult]]
+    provider: str | None
+    outcome: str
+
+
+async def attempt_analysis(text: str, timeout: float = 3.0, selected: str | None = None) -> AnalysisAttempt:
+    """Run the production analyzer and distinguish provider failures from schema failures."""
     timeout = float(os.environ.get("LLM_TIMEOUT", timeout))
     prompt = LLM_PROMPT_TEMPLATE.format(text=text)
 
     provider = None
     for name, key_var, model_var, base_url, default_model in OPENAI_COMPATIBLE_PROVIDERS:
         api_key = os.environ.get(key_var)
-        if api_key:
+        if api_key and (selected is None or selected == name):
             provider = name
             call = _call_openai_compatible(base_url, api_key, os.environ.get(model_var, default_model), prompt, timeout)
             break
     else:
         api_key = os.environ.get("GEMINI_API_KEY")
-        if api_key:
+        if api_key and selected in (None, "gemini"):
             provider = "gemini"
             call = _call_gemini(api_key, prompt)
 
     if provider is None:
         logger.warning("No LLM API key set (GROQ_API_KEY, XAI_API_KEY or GEMINI_API_KEY). Falling back to lexicon.")
-        return None
+        return AnalysisAttempt(None, None, "unconfigured")
 
     try:
         raw_response_text = await asyncio.wait_for(call, timeout=timeout)
-        if not raw_response_text:
-            return None
-        return _parse_aspects(raw_response_text)
-    except (asyncio.TimeoutError, Exception) as err:
-        logger.error(f"{provider} LLM analysis failed or timed out: {err!r}")
-        return None
+    except (TimeoutError, httpx.TimeoutException):
+        logger.warning("analysis_timeout provider=%s", provider)
+        return AnalysisAttempt(None, provider, "timeout")
+    except (KeyError, IndexError, TypeError, ValueError):
+        logger.warning("analysis_invalid_output provider=%s", provider)
+        return AnalysisAttempt(None, provider, "invalid_output")
+    except Exception as err:
+        logger.warning("analysis_provider_error provider=%s error_type=%s", provider, type(err).__name__)
+        return AnalysisAttempt(None, provider, "provider_error")
+
+    try:
+        aspects = _parse_aspects(raw_response_text) if raw_response_text else None
+    except (AttributeError, TypeError, ValueError):
+        aspects = None
+    if not aspects:
+        logger.warning("analysis_invalid_output provider=%s", provider)
+    return AnalysisAttempt(aspects, provider, "ok" if aspects else "invalid_output")
+
+
+async def analyze_llm(text: str, timeout: float = 3.0) -> Optional[List[AspectResult]]:
+    return (await attempt_analysis(text, timeout)).aspects

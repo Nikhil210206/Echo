@@ -9,10 +9,14 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    Index,
     String,
     Text,
+    UniqueConstraint,
     func,
+    text,
 )
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -70,9 +74,17 @@ class Location(Base):
 
 class Feedback(Base):
     __tablename__ = "feedback"
+    __table_args__ = (
+        Index("ix_feedback_search_location_date", "location_id", "created_at",
+              postgresql_where=text("search_embedding IS NOT NULL")),
+    )
     id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
     kind: Mapped[FeedbackKind] = mapped_column(SAEnum(FeedbackKind), default=FeedbackKind.text)
     text_redacted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    search_embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(384).with_variant(JSON(none_as_null=True), "sqlite"), deferred=True
+    )
+    search_embedding_key: Mapped[str | None] = mapped_column(String(128), deferred=True)
     location_id: Mapped[str] = mapped_column(ForeignKey("locations.id"), nullable=False)
     tracking_code: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
     device_hash: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
@@ -145,3 +157,28 @@ class Verification(Base):
     fixed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     issue: Mapped["Issue"] = relationship(back_populates="verifications")
+
+
+class AssistantConversation(Base):
+    __tablename__ = "assistant_conversations"
+    __table_args__ = (Index("ix_assistant_owner_updated", "owner_id", "updated_at"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title: Mapped[str] = mapped_column(String(96), nullable=False)
+    turn_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AssistantMessage(Base):
+    __tablename__ = "assistant_messages"
+    __table_args__ = (UniqueConstraint("conversation_id", "request_id", name="uq_assistant_message_request"),)
+
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("assistant_conversations.id", ondelete="CASCADE"), primary_key=True
+    )
+    turn: Mapped[int] = mapped_column(Integer, primary_key=True)
+    role: Mapped[str] = mapped_column(String(9), primary_key=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    request_id: Mapped[str | None] = mapped_column(String(36))
+    result: Mapped[dict | None] = mapped_column(JSON)
