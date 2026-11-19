@@ -14,12 +14,16 @@ from app.models import (
     Feedback,
     FeedbackStatus,
     Issue,
+    IssueStatus,
     Location,
     User,
     UserRole,
 )
 from app.routers.stream import broadcast_event
+from app.services.feedback_index import update_feedback_embedding
 from app.services.lifecycle import link_negative_aspects, rescore_issues, unlink_feedback
+from app.services.redact import redact_pii
+from app.services.retrieval import Access, SearchFilters, matching_aspects
 
 router = APIRouter(tags=["admin"])
 
@@ -34,7 +38,7 @@ class ModerationActionRequest(BaseModel):
 
 
 # --- Helper Functions ---
-def format_feedback_record(fb: Feedback) -> Dict[str, Any]:
+def format_feedback_record(fb: Feedback, staff_id: str | None = None) -> Dict[str, Any]:
     """Formats a Feedback ORM instance into the standardized FeedbackRecord dict."""
     loc_name = fb.location.name if fb.location else "Unknown"
     status_str = fb.status.value if hasattr(fb.status, "value") else str(fb.status)
@@ -50,16 +54,17 @@ def format_feedback_record(fb: Feedback) -> Dict[str, Any]:
             "issue_id": a.issue_id,
         }
         for a in fb.aspects
+        if staff_id is None or (a.issue and a.issue.assignee_id == staff_id)
     ]
 
     return {
         "id": fb.id,
         "kind": fb.kind.value if hasattr(fb.kind, "value") else str(fb.kind),
         "text_redacted": fb.text_redacted,
-        "reporter_name": fb.reporter_name,
-        "reporter_phone": fb.reporter_phone,
+        "reporter_name": fb.reporter_name if staff_id is None else None,
+        "reporter_phone": fb.reporter_phone if staff_id is None else None,
         "location_name": loc_name,
-        "tracking_code": fb.tracking_code,
+        "tracking_code": fb.tracking_code if staff_id is None else None,
         "status": status_str,
         "overall_sentiment": fb.overall_sentiment,
         "analyzed_by": fb.analyzed_by,
@@ -80,16 +85,23 @@ def search_feedback(
     location_id: Optional[str] = None,
     days: Optional[int] = Query(None, le=MAX_DAYS),
     status: Optional[str] = None,
+    issue_status: Optional[str] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Search feedback with filters and pagination."""
+    staff_id = current_user.id if current_user.role == UserRole.staff else None
+    aspect_options = joinedload(Feedback.aspects).defer(Aspect.embedding)
+    if staff_id:
+        aspect_options = aspect_options.joinedload(Aspect.issue).load_only(Issue.assignee_id)
     query = db.query(Feedback).options(
         joinedload(Feedback.location),
-        joinedload(Feedback.aspects).defer(Aspect.embedding),
+        aspect_options,
     )
+    if staff_id:
+        query = query.filter(Feedback.status == FeedbackStatus.approved)
 
     # Default status to 'approved' if not explicitly provided
     filter_status = status if status is not None else "approved"
@@ -109,7 +121,16 @@ def search_feedback(
         query = query.filter(Feedback.created_at >= cutoff)
 
     # IN-subquery instead of JOIN + DISTINCT: Postgres can't DISTINCT over the json `flags` column
-    if sentiment or category:
+    if issue_status and issue_status not in {"active", *(status.value for status in IssueStatus)}:
+        raise AppError("VALIDATION_ERROR", "Unknown issue status", status_code=400, fields={"issue_status": "invalid"})
+    if issue_status or staff_id:
+        matching = matching_aspects(Access(current_user.id, current_user.role), SearchFilters(issue_status=issue_status))
+        if sentiment:
+            matching = matching.where(Aspect.sentiment == sentiment)
+        if category:
+            matching = matching.where(Aspect.category == category)
+        query = query.filter(Feedback.id.in_(matching))
+    elif sentiment or category:
         matching = db.query(Aspect.feedback_id)
         if sentiment:
             matching = matching.filter(Aspect.sentiment == sentiment)
@@ -122,7 +143,7 @@ def search_feedback(
     items = query.order_by(Feedback.created_at.desc()).offset(offset).limit(page_size).all()
 
     return {
-        "items": [format_feedback_record(fb) for fb in items],
+        "items": [format_feedback_record(fb, staff_id) for fb in items],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -169,7 +190,7 @@ def moderate_feedback(
     if user_role_str != "admin":
         raise AppError("FORBIDDEN", "Admin access required", status_code=403)
 
-    fb = db.query(Feedback).filter(Feedback.id == id).first()
+    fb = db.query(Feedback).filter(Feedback.id == id).with_for_update().first()
     if not fb:
         raise AppError("NOT_FOUND", f"Feedback with id '{id}' not found", status_code=404)
 
@@ -181,7 +202,7 @@ def moderate_feedback(
         if not payload.text or not payload.text.strip():
             raise AppError("VALIDATION_ERROR", "text required for redact action", status_code=400)
 
-        new_text = payload.text.strip()
+        new_text = redact_pii(payload.text.strip())
         if fb.text_redacted != new_text:
             flags = list(fb.flags or [])
             if "profanity_masked" not in flags:
@@ -204,6 +225,7 @@ def moderate_feedback(
     elif fb.status == FeedbackStatus.rejected:
         rescore_issues(db, unlink_feedback(db, fb))
 
+    update_feedback_embedding(fb)
     db.commit()
     db.refresh(fb)
 

@@ -178,13 +178,89 @@ export interface FeedbackQuery {
   q?: string;
   sentiment?: Sentiment;
   category?: string;
-  location_id?: number;
+  location_id?: string | number;
   status?: ModerationStatus;
   /** days back from now */
   days?: number;
   page?: number;
   page_size?: number;
+  issue_status?: IssueStatus | "active";
 }
+
+export interface SemanticQuery {
+  q: string;
+  category?: string;
+  sentiment?: Sentiment;
+  location?: string;
+  days?: number;
+  date_from?: string;
+  date_to?: string;
+  issue_status?: IssueStatus | "active";
+}
+
+export interface FeedbackHit {
+  id: string;
+  excerpt: string;
+  location_name: string;
+  created_at: string;
+  sentiment: Sentiment | null;
+  issues: { id: string; status: IssueStatus }[];
+  similarity: number | null;
+}
+
+export type FeedbackSource = FeedbackHit & { text: string };
+
+export interface AssistantSource {
+  source_id: string;
+  kind: "feedback" | "issue";
+  record_id: string | null;
+  title: string;
+  excerpt: string | null;
+  facts: {
+    issues?: FeedbackHit["issues"];
+    status?: IssueStatus;
+    priority?: Omit<PriorityBreakdown, "rank">;
+    report_count?: number;
+  };
+}
+
+export interface StatisticsRequest {
+  metric: "approved_feedback_count";
+  filters: Omit<SemanticQuery, "q">;
+}
+
+export interface StatisticsFact {
+  fact_id: string;
+  request: StatisticsRequest;
+  scope: "campus" | "assigned_issues";
+  start_at: string | null;
+  end_before: string;
+  observed_at: string;
+  total: number;
+  by_overall_sentiment: Record<string, number>;
+}
+
+export interface AssistantResult {
+  mode: "grounded" | "retrieval_only";
+  reason: "model_not_configured" | "provider_timeout" | "provider_error" | "invalid_answer" |
+    "insufficient_evidence" | "evidence_changed" | "statistics_scope_required" | "statistics_unavailable" |
+    "legacy_answer" | null;
+  sources: AssistantSource[];
+  statistic: StatisticsFact | null;
+  search_mode: "semantic" | "keyword" | null;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  updated_at: string;
+}
+
+export type AssistantMessage =
+  | { turn: number; role: "user"; text: string; statistics?: StatisticsRequest | null }
+  | { turn: number; role: "assistant"; result: AssistantResult };
+
+export type Conversation = ConversationSummary & { messages: AssistantMessage[] };
 
 export interface Page<T> {
   items: T[];

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, defer, joinedload
 
 from app.models import Aspect, Feedback, Issue, IssueStatus, Verification
 from app.services.cluster import cluster_aspect, compute_updated_centroid
-from app.services.priority import calculate_priority_score
+from app.services.priority import URGENCY_MAP, priority_from_counts
 
 
 def link_negative_aspects(db: Session, aspects: Iterable[Aspect], location_id: str) -> Set[str]:
@@ -100,32 +100,27 @@ def score_issue(aspects: List[Aspect], reference_time: Optional[datetime] = None
     The single formula behind both the stored priority_score and the breakdown on the issue page.
     Expects each aspect's feedback to be loaded."""
     reference_time = reference_time or datetime.now(timezone.utc)
-    urgency_levels = {"normal": 1, "high": 2, "critical": 3}
-
     reports: Dict[str, Dict[str, Any]] = {}
-    highest_urgency = "normal"
+    highest_urgency = 1
     for a in aspects:
         report = reports.setdefault(
             a.feedback_id, {"created_at": a.feedback.created_at if a.feedback else None, "sentiment": "neutral"}
         )
         if a.sentiment == "negative":
             report["sentiment"] = "negative"
-        urgency = (a.urgency or "normal").lower()
-        if urgency_levels.get(urgency, 1) > urgency_levels[highest_urgency]:
-            highest_urgency = urgency
+        highest_urgency = max(highest_urgency, URGENCY_MAP.get((a.urgency or "normal").lower(), 1))
 
-    if not reports:
-        # calculate_priority_score treats an empty list as one report; an issue with none scores 0
-        return {"recent_reports": 0, "older_reports": 0, "recency_weighted": 0.0, "negative_share": 0.0,
-                "urgency_multiplier": 1, "score": 0.0}
-
-    result = calculate_priority_score(list(reports.values()), highest_urgency=highest_urgency, reference_time=reference_time)
     seven_days_ago = reference_time - timedelta(days=7)
     recent_reports = sum(1 for r in reports.values() if r["created_at"] and _as_utc(r["created_at"]) >= seven_days_ago)
+    negative_reports = sum(r["sentiment"] == "negative" for r in reports.values())
+    return issue_priority_summary(len(reports), recent_reports, negative_reports, highest_urgency)
 
+
+def issue_priority_summary(total: int, recent: int, negative: int, urgency: float) -> Dict[str, Any]:
+    result = priority_from_counts(total, recent, negative, urgency)
     return {
-        "recent_reports": recent_reports,
-        "older_reports": len(reports) - recent_reports,
+        "recent_reports": recent,
+        "older_reports": total - recent,
         "recency_weighted": result.breakdown.recency_weighted_reports,
         "negative_share": result.breakdown.negative_share,
         "urgency_multiplier": int(result.breakdown.urgency_multiplier),

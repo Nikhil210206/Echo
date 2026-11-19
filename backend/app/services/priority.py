@@ -39,7 +39,7 @@ def calculate_priority_score(
         )
 
     total_reports = len(reports)
-    rw = 0.0
+    recent_count = 0
     negative_count = 0
 
     seven_days_ago = reference_time - timedelta(days=7)
@@ -58,27 +58,26 @@ def calculate_priority_score(
 
         # Recency weighting
         if created_at and created_at >= seven_days_ago:
-            rw += 1.0
-        else:
-            rw += 0.5
+            recent_count += 1
 
         # Check negative sentiment
         sentiment = r.get("sentiment", "negative")
         if str(sentiment).lower() == "negative":
             negative_count += 1
 
-    n_share = (negative_count / total_reports) if total_reports > 0 else 1.0
     u_mult = URGENCY_MAP.get(highest_urgency.lower(), 1.0)
+    return priority_from_counts(total_reports, recent_count, negative_count, u_mult)
 
-    raw_score = rw * n_share * u_mult
-    score = round(raw_score, 2)
 
+def priority_from_counts(total: int, recent: int, negative: int, urgency_multiplier: float) -> PriorityResult:
+    rw = recent + (total - recent) * 0.5
+    n_share = negative / total if total else 0.0
     return PriorityResult(
-        priority_score=score,
+        priority_score=round(rw * n_share * urgency_multiplier, 2),
         breakdown=PriorityBreakdown(
             recency_weighted_reports=round(rw, 2),
             negative_share=round(n_share, 4),
-            urgency_multiplier=u_mult,
+            urgency_multiplier=urgency_multiplier,
             formula="Rw × N × U"
         )
     )

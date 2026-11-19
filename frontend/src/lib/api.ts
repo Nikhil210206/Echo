@@ -1,11 +1,17 @@
 // Typed client for the Echo API. With VITE_USE_MOCKS unset or "true" it talks
 // to the in-memory mock store; set VITE_USE_MOCKS=false to hit the backend.
 import { MockError, mock } from "@/mocks/store";
+import { readEventStream } from "./eventStream";
 import type {
   AnalyticsSummary,
   ApiErrorBody,
+  AssistantResult,
+  Conversation,
+  ConversationSummary,
+  FeedbackHit,
   FeedbackQuery,
   FeedbackRecord,
+  FeedbackSource,
   IssueDetail,
   IssueQuery,
   IssueSummary,
@@ -17,6 +23,8 @@ import type {
   Page,
   PublicIssue,
   PublicStats,
+  SemanticQuery,
+  StatisticsRequest,
   TickerItem,
   SpikeAlert,
   SubmitFeedbackInput,
@@ -52,6 +60,7 @@ let token: string | null = (() => {
   }
 })();
 export function setToken(t: string | null) {
+  if (token !== t) closeLive();
   token = t;
   try {
     if (t) sessionStorage.setItem(TOKEN_KEY, t);
@@ -79,15 +88,16 @@ async function request<T>(path: string, init?: RequestInit & { json?: unknown })
       credentials: "include",
     });
   } catch {
+    if (rest.signal?.aborted) throw new ApiError("TIMEOUT", "The request took too long. Try again.");
     throw new ApiError("NETWORK", "Can't reach Echo right now. Check your connection and try again.");
   }
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as ApiErrorBody | null;
     throw new ApiError(
-      body?.error.code ?? "HTTP_ERROR",
-      body?.error.message ?? "Something went wrong on our side. Try again in a moment.",
+      body?.error?.code ?? "HTTP_ERROR",
+      body?.error?.message ?? "Something went wrong on our side. Try again in a moment.",
       res.status,
-      body?.error.fields,
+      body?.error?.fields,
     );
   }
   return res.json() as Promise<T>;
@@ -135,6 +145,11 @@ const qs = (o: object) => {
   const s = p.toString();
   return s ? `?${s}` : "";
 };
+
+function backendRequest<T>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
+  if (USE_MOCKS) return Promise.reject(new ApiError("BACKEND_REQUIRED", "Connect to the Echo API to use this feature."));
+  return request(path, { ...init, signal: AbortSignal.timeout(35_000) });
+}
 
 /* ---- endpoints ---------------------------------------------------------- */
 
@@ -198,7 +213,25 @@ export const api = {
   },
 
   feedback: (q: FeedbackQuery): Promise<Page<FeedbackRecord>> =>
-    USE_MOCKS ? fake(() => mock.searchFeedback(token, q), 260) : cachedRequest(`/feedback${qs(q)}`),
+    USE_MOCKS ? fake(() => mock.searchFeedback(token, { ...q, location_id: q.location_id ? Number(q.location_id) : undefined }), 260) : cachedRequest(`/feedback${qs(q)}`),
+
+  semanticFeedback: (query: SemanticQuery): Promise<FeedbackHit[]> =>
+    backendRequest(`/feedback/semantic${qs(query)}`),
+
+  feedbackSource: (id: string): Promise<FeedbackSource> => backendRequest(`/feedback/sources/${encodeURIComponent(id)}`),
+
+  assistantConversations: (): Promise<{ items: ConversationSummary[]; mode: AssistantResult["mode"] }> =>
+    backendRequest("/assistant/conversations"),
+
+  createConversation: (id: string): Promise<ConversationSummary> =>
+    backendRequest(`/assistant/conversations/${encodeURIComponent(id)}`, { method: "PUT" }),
+
+  conversation: (id: string): Promise<Conversation> => backendRequest(`/assistant/conversations/${encodeURIComponent(id)}`),
+
+  askAssistant: (id: string, question: string, requestId: string, statistics?: StatisticsRequest): Promise<Conversation> =>
+    backendRequest(`/assistant/conversations/${encodeURIComponent(id)}/messages`, {
+      method: "POST", json: { question, request_id: requestId, statistics },
+    }),
 
   recentFeed: (): Promise<FeedbackRecord[]> =>
     USE_MOCKS ? fake(() => mock.recentFeed(token), 150) : cachedRequest(`/feedback${qs({ page_size: 8, status: "approved" })}`).then((p) => (p as Page<FeedbackRecord>).items),
@@ -226,11 +259,7 @@ export const api = {
       : cachedRequest("/dashboard/summary"),
 };
 
-/**
- * Live events. The backend streams them over SSE; EventSource can't send an
- * Authorization header, so the token rides in the query string (short-lived on
- * the server side). The mock store pushes the same events in-process.
- */
+/** Share a single authenticated SSE connection across the admin's subscribers. */
 export function subscribeLive(onEvent: (e: LiveEvent) => void, onStatus?: (live: boolean) => void): () => void {
   if (USE_MOCKS) {
     onStatus?.(true);
@@ -240,10 +269,11 @@ export function subscribeLive(onEvent: (e: LiveEvent) => void, onStatus?: (live:
     onStatus?.(false);
     return () => {};
   }
-  // All subscribers share one EventSource. Each open stream permanently holds one of the browser's
-  // ~6 connections to the API host, so one per subscriber starved normal requests.
   if (live && live.token !== token) closeLive();
-  if (!live) live = openLive(token);
+  if (!live) {
+    live = { token, controller: new AbortController(), subs: new Set(), connected: false, retryMs: 1000 };
+    void readLive(live);
+  }
   const sub = { onEvent, onStatus };
   live.subs.add(sub);
   onStatus?.(live.connected);
@@ -255,36 +285,66 @@ export function subscribeLive(onEvent: (e: LiveEvent) => void, onStatus?: (live:
 }
 
 type LiveSub = { onEvent: (e: LiveEvent) => void; onStatus?: (live: boolean) => void };
-let live: { token: string; src: EventSource; subs: Set<LiveSub>; connected: boolean } | null = null;
+type LiveConnection = {
+  token: string;
+  controller: AbortController;
+  subs: Set<LiveSub>;
+  connected: boolean;
+  retryMs: number;
+  timer?: ReturnType<typeof setTimeout>;
+};
+let live: LiveConnection | null = null;
 
-function openLive(tok: string) {
-  const conn = {
-    token: tok,
-    src: new EventSource(`${API_BASE}/api/stream${qs({ token: tok })}`, { withCredentials: true }),
-    subs: new Set<LiveSub>(),
-    connected: false,
-  };
-  const setStatus = (up: boolean) => {
-    conn.connected = up;
-    conn.subs.forEach((s) => s.onStatus?.(up));
-  };
-  conn.src.onopen = () => setStatus(true);
-  conn.src.onerror = () => setStatus(false);
-  conn.src.onmessage = (m) => {
-    let e: LiveEvent;
-    try {
-      e = JSON.parse(m.data) as LiveEvent;
-    } catch {
-      return; /* ignore malformed frames */
+function setLiveStatus(conn: LiveConnection, connected: boolean) {
+  if (conn.connected === connected) return;
+  conn.connected = connected;
+  conn.subs.forEach((s) => s.onStatus?.(connected));
+}
+
+async function readLive(conn: LiveConnection) {
+  const { signal } = conn.controller;
+  let retry = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/stream`, {
+      headers: { Accept: "text/event-stream", Authorization: `Bearer ${conn.token}` },
+      credentials: "include",
+      signal,
+    });
+    retry = response.status !== 401 && response.status !== 403 && response.status !== 204;
+    if (signal.aborted || !response.ok || !response.body ||
+      !response.headers.get("content-type")?.startsWith("text/event-stream")) {
+      await response.body?.cancel();
+      return;
     }
-    // Something changed on the server: drop cached responses so the refetches this triggers get fresh data
-    clearApiCache();
-    conn.subs.forEach((s) => s.onEvent(e));
-  };
-  return conn;
+    conn.retryMs = 1000;
+    setLiveStatus(conn, true);
+    await readEventStream(response.body, (data) => {
+      if (signal.aborted) return;
+      let event: LiveEvent;
+      try {
+        event = JSON.parse(data) as LiveEvent;
+      } catch {
+        return;
+      }
+      if (!event || typeof event.type !== "string") return;
+      clearApiCache();
+      conn.subs.forEach((s) => s.onEvent(event));
+    });
+  } catch {
+    // Network, decoding, and stream failures use the same reconnect path.
+  } finally {
+    setLiveStatus(conn, false);
+    if (retry && !signal.aborted) {
+      conn.timer = setTimeout(() => void readLive(conn), conn.retryMs);
+      conn.retryMs = Math.min(conn.retryMs * 2, 15_000);
+    }
+  }
 }
 
 function closeLive() {
-  live?.src.close();
+  if (!live) return;
+  clearTimeout(live.timer);
+  live.controller.abort();
+  setLiveStatus(live, false);
   live = null;
 }

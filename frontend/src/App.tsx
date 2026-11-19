@@ -17,6 +17,8 @@ const Dashboard = lazy(() => import("@/pages/admin/Dashboard"));
 const Issues = lazy(() => import("@/pages/admin/Issues"));
 const IssueDetail = lazy(() => import("@/pages/admin/IssueDetail"));
 const Feedback = lazy(() => import("@/pages/admin/Feedback"));
+const FeedbackSource = lazy(() => import("@/pages/admin/FeedbackSource"));
+const Assistant = lazy(() => import("@/pages/admin/Assistant"));
 const Moderation = lazy(() => import("@/pages/admin/Moderation"));
 const QRCodes = lazy(() => import("@/pages/admin/QRCodes"));
 
@@ -72,6 +74,8 @@ export default function App() {
               <Route path="issues" element={<Issues />} />
               <Route path="issues/:id" element={<IssueDetail />} />
               <Route path="feedback" element={adminOnly(<Feedback />)} />
+              <Route path="feedback/:id" element={<FeedbackSource />} />
+              <Route path="assistant" element={<Assistant />} />
               <Route path="moderation" element={adminOnly(<Moderation />)} />
               <Route path="qr" element={adminOnly(<QRCodes />)} />
             </Route>

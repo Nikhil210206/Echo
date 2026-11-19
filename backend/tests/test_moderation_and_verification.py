@@ -62,7 +62,10 @@ def env():
     app.dependency_overrides[get_current_user] = lambda: admin
     # Every complaint opens its own new issue; no embedding model needed
     no_match = ClusterMatchResult(should_join=False, embedding=[0.0] * 3)
-    with patch("app.services.lifecycle.cluster_aspect", return_value=no_match):
+    with (
+        patch("app.services.lifecycle.cluster_aspect", return_value=no_match),
+        patch("app.services.feedback_index.embed_with_timeout", return_value=[1.0] + [0.0] * 383),
+    ):
         yield TestClient(app), db, loc
     app.dependency_overrides.clear()
     db.close()
@@ -101,6 +104,7 @@ def test_flagged_feedback_creates_no_issue(env):
     client, db, _ = env
     fb = feedback_by_code(db, submit(client, flagged=True))
     assert fb.status == FeedbackStatus.pending
+    assert fb.search_embedding is None
     assert all(a.issue_id is None for a in fb.aspects)
     assert db.query(Issue).count() == 0
 
@@ -109,6 +113,7 @@ def test_approved_feedback_still_creates_issue(env):
     client, db, _ = env
     fb = feedback_by_code(db, submit(client, flagged=False))
     assert fb.status == FeedbackStatus.approved
+    assert len(fb.search_embedding) == 384
     assert fb.aspects[0].issue_id is not None
     assert db.query(Issue).one().priority_score > 0
 

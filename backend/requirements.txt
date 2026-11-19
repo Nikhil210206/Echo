@@ -3,6 +3,7 @@ uvicorn[standard]
 sqlalchemy
 alembic
 psycopg[binary]
+pgvector>=0.4,<0.5
 pydantic
 python-jose[cryptography]
 passlib[bcrypt]

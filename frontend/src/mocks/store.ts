@@ -1054,6 +1054,10 @@ export const mock = {
     const items = feedback
       .filter((f) => f.status === (q.status ?? "approved")) // pending items live in the moderation queue
       .filter((f) => !q.location_id || f.location_id === q.location_id)
+      .filter((f) => !q.issue_status || f.aspects.some((aspect) => {
+        const issue = issues.find((item) => item.id === aspect.issue_id);
+        return issue && (q.issue_status === "active" ? issue.status !== "resolved" : issue.status === q.issue_status);
+      }))
       .filter((f) => !since || new Date(f.created_at).getTime() >= since)
       .filter((f) => !q.category || f.aspects.some((a) => a.category === q.category))
       .filter((f) => !q.sentiment || f.aspects.some((a) => a.sentiment === q.sentiment && (!q.category || a.category === q.category)))

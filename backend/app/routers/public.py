@@ -24,6 +24,7 @@ from app.models import (
 )
 from app.routers.stream import broadcast_event
 from app.services.analysis import run_analysis_pipeline
+from app.services.feedback_index import update_feedback_embedding
 from app.services.lifecycle import (
     current_round_votes,
     link_negative_aspects,
@@ -344,6 +345,7 @@ def _store_feedback(db: Session, payload: FeedbackCreateRequest, loc: Location, 
     if feedback_status == FeedbackStatus.approved:
         # 6. Cluster negative aspects into issues and recalculate their priority scores
         rescore_issues(db, link_negative_aspects(db, db_aspects, loc.id))
+        update_feedback_embedding(feedback)
 
     aspects_out = [
         {
